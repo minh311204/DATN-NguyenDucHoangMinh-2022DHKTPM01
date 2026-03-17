@@ -1,0 +1,379 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BANNED
+}
+
+model User {
+  id Int @id @default(autoincrement())
+
+  email        String @unique
+  phone String?
+  passwordHash String
+
+  firstName String?
+  lastName  String?
+
+  status UserStatus @default(INACTIVE)
+
+  invitationToken             String?
+  invitationTokenExpiredAtUtc DateTime?
+
+  failedLoginCount Int @default(0)
+
+  createdAtUtc DateTime @default(now())
+  updatedAtUtc DateTime @updatedAt
+
+  emailVerified Boolean
+  emailVerifiedAtUtc DateTime?
+
+  roles UserRole[]
+
+  refreshTokens RefreshToken[]
+  resetTokens   ResetPasswordToken[]
+
+  bookings      Booking[]
+  reviews       Review[]
+  wishlists     Wishlist[]
+  notifications Notification[]
+  preference    UserPreference?
+  chatSessions  ChatSession[]
+  behaviors     UserBehavior[]
+}
+
+model Role {
+  id       Int    @id @default(autoincrement())
+  roleName String @unique
+
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model UserRole {
+  userId Int
+  roleId Int
+
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@id([userId, roleId])
+}
+
+model RolePermission {
+  id Int @id @default(autoincrement())
+
+  roleId       Int
+  resourceName String
+  permission   Int
+
+  role Role @relation(fields: [roleId], references: [id])
+}
+
+model RefreshToken {
+  id String @id @default(uuid())
+
+  userId Int
+
+  refreshToken String @unique
+
+  accessTokenJti String
+
+  expiredDateTimeUtc DateTime
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model BlacklistedAccessToken {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  jti    String
+
+  expiredDateTimeUtc DateTime
+}
+
+model ResetPasswordToken {
+  id Int @id @default(autoincrement())
+
+  userId Int
+
+  token String @unique
+
+  expiredDateTimeUtc DateTime
+
+  isSentEmail Boolean @default(false)
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model Region {
+  id        Int        @id @default(autoincrement())
+  name      String?
+  provinces Province[]
+}
+
+model Province {
+  id       Int     @id @default(autoincrement())
+  regionId Int
+  name     String?
+
+  region    Region     @relation(fields: [regionId], references: [id])
+  locations Location[]
+}
+
+model Location {
+  id          Int      @id @default(autoincrement())
+  provinceId  Int
+  name        String?
+  latitude    Decimal?
+  longitude   Decimal?
+  description String?
+  isActive    Boolean?
+
+  province Province @relation(fields: [provinceId], references: [id])
+  tours    Tour[]
+}
+
+model TourCategory {
+  id          Int      @id @default(autoincrement())
+  name        String?
+  description String?
+  isActive    Boolean?
+
+  tours Tour[]
+}
+
+model Tour {
+  id           Int       @id @default(autoincrement())
+  categoryId   Int
+  locationId   Int
+  name         String
+  slug         String?
+  description  String?
+  durationDays Int?
+  basePrice    Decimal?
+  maxPeople    Int?
+  thumbnailUrl String?
+  ratingAvg    Float?
+  totalReviews Int?
+  isActive     Boolean?
+  createdAtUtc DateTime?
+
+  category TourCategory @relation(fields: [categoryId], references: [id])
+  location Location     @relation(fields: [locationId], references: [id])
+
+  images        TourImage[]
+  videos        TourVideo[]
+  schedules     TourSchedule[]
+  itineraries   TourItinerary[]
+  tags          TourTagMapping[]
+  reviews       Review[]
+  wishlists     Wishlist[]
+  embeddings    TourEmbedding[]
+  userBehaviors UserBehavior[]
+}
+
+model TourImage {
+  id          Int      @id @default(autoincrement())
+  tourId      Int
+  imageUrl    String
+  isThumbnail Boolean?
+
+  tour Tour @relation(fields: [tourId], references: [id])
+}
+
+model TourVideo {
+  id       Int    @id @default(autoincrement())
+  tourId   Int
+  videoUrl String
+
+  tour Tour @relation(fields: [tourId], references: [id])
+}
+
+model TourSchedule {
+  id             Int      @id @default(autoincrement())
+  tourId         Int
+  startDate      DateTime
+  endDate        DateTime
+  availableSeats Int?
+  bookedSeats    Int?
+  priceOverride  Decimal?
+  status         String?
+
+  tour     Tour      @relation(fields: [tourId], references: [id])
+  bookings Booking[]
+}
+
+model TourItinerary {
+  id          Int     @id @default(autoincrement())
+  tourId      Int
+  dayNumber   Int
+  title       String?
+  description String?
+
+  tour Tour @relation(fields: [tourId], references: [id])
+}
+
+model TourTag {
+  id   Int    @id @default(autoincrement())
+  name String
+
+  tours TourTagMapping[]
+}
+
+model TourTagMapping {
+  tourId Int
+  tagId  Int
+
+  tour Tour    @relation(fields: [tourId], references: [id])
+  tag  TourTag @relation(fields: [tagId], references: [id])
+
+  @@id([tourId, tagId])
+}
+
+model Booking {
+  id             Int       @id @default(autoincrement())
+  userId         Int
+  tourScheduleId Int
+  numberOfPeople Int
+  bookingDateUtc DateTime?
+  totalAmount    Decimal?
+  status         String?
+
+  user     User         @relation(fields: [userId], references: [id])
+  schedule TourSchedule @relation(fields: [tourScheduleId], references: [id])
+
+  passengers BookingPassenger[]
+  payments   Payment[]
+  history    BookingStatusHistory[]
+}
+
+model BookingPassenger {
+  id             Int       @id @default(autoincrement())
+  bookingId      Int
+  fullName       String
+  dateOfBirth    DateTime?
+  gender         String?
+  passportNumber String?
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+}
+
+model BookingStatusHistory {
+  id           Int       @id @default(autoincrement())
+  bookingId    Int
+  oldStatus    String?
+  newStatus    String?
+  changedAtUtc DateTime?
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+}
+
+model Payment {
+  id              Int       @id @default(autoincrement())
+  bookingId       Int
+  paymentGateway  String?
+  paymentMethod   String?
+  transactionCode String?
+  amount          Decimal?
+  status          String?
+  paidAtUtc       DateTime?
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+}
+
+model Review {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  tourId       Int
+  rating       Int
+  comment      String?
+  createdAtUtc DateTime? @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+  tour Tour @relation(fields: [tourId], references: [id])
+
+  @@unique([userId, tourId])
+}
+
+model Wishlist {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  tourId       Int
+  createdAtUtc DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+  tour Tour @relation(fields: [tourId], references: [id])
+
+  @@unique([userId, tourId])
+}
+
+model Notification {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  title        String?
+  content      String?
+  isRead       Boolean?
+  createdAtUtc DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model UserPreference {
+  id                 Int     @id @default(autoincrement())
+  userId             Int     @unique
+  preferredLocations String?
+  budgetRange        String?
+  travelStyle        String?
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model ChatSession {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  startedAtUtc DateTime?
+
+  user     User          @relation(fields: [userId], references: [id])
+  messages ChatMessage[]
+}
+
+model ChatMessage {
+  id           Int       @id @default(autoincrement())
+  sessionId    Int
+  role         String
+  content      String
+  createdAtUtc DateTime?
+
+  session ChatSession @relation(fields: [sessionId], references: [id])
+}
+
+model TourEmbedding {
+  id           Int     @id @default(autoincrement())
+  tourId       Int
+  embedding    String
+  contentChunk String?
+
+  tour Tour @relation(fields: [tourId], references: [id])
+}
+
+model UserBehavior {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  tourId       Int
+  action       String
+  createdAtUtc DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+  tour Tour @relation(fields: [tourId], references: [id])
+}

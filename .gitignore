@@ -1,0 +1,34 @@
+# Build
+dist/
+build/
+
+# Dependencies
+node_modules/
+
+# Env
+.env*
+
+# Logs
+logs/
+*.log
+
+# Coverage
+coverage/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+
+# Temp
+.temp
+.tmp
+
+# Prisma
+/generated/prisma
