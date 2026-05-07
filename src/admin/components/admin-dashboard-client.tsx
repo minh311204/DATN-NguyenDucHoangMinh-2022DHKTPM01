@@ -3,9 +3,6 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ArrowRight,
-  BarChart3,
-  Sparkles,
   TrendingUp,
   Wallet,
   Users,
@@ -174,7 +171,7 @@ export function AdminDashboardClient() {
           spark: revSpark.length ? revSpark : [0],
           sparkColor: "#8b5cf6",
           href: "/users",
-          action: "Quản lý user",
+          action: "Quản lý người dùng",
         },
         {
           label: "Hoàn thành / tỷ lệ",
@@ -202,60 +199,8 @@ export function AdminDashboardClient() {
       ? "Không tải được thống kê. Hãy đảm bảo API đang chạy và đã đăng nhập admin (endpoint /admin/dashboard/stats)."
       : err;
 
-  const prevLabel = stats
-    ? new Date(stats.comparison.prevRange.startUtc).toLocaleDateString("vi-VN") +
-      " – " +
-      new Date(stats.comparison.prevRange.endUtc).toLocaleDateString("vi-VN")
-    : "";
-
   return (
     <>
-      <section className="relative mb-8 overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950 p-6 text-white shadow-lg ring-1 ring-white/10">
-        <div className="pointer-events-none absolute -right-16 -top-16 h-40 w-40 rounded-full bg-sky-500/20 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-12 -left-8 h-32 w-32 rounded-full bg-indigo-500/15 blur-2xl" />
-        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-sky-300/90">
-              <Sparkles className="h-3.5 w-3.5" aria-hidden />
-              Bảng điều khiển
-            </p>
-            <h2 className="mt-2 text-xl font-semibold tracking-tight sm:text-2xl">
-              Tổng quan vận hành
-            </h2>
-            <p className="mt-1 max-w-2xl text-sm text-slate-300">
-              So sánh với kỳ liền trước cùng độ dài; biểu đồ kết hợp doanh thu (TT thành công) và
-              số đơn tạo theo từng mốc thời gian.
-            </p>
-            {stats ? (
-              <p className="mt-2 text-xs text-slate-400">
-                Kỳ so sánh: {prevLabel}
-              </p>
-            ) : null}
-          </div>
-          <nav
-            className="flex flex-wrap gap-2"
-            aria-label="Truy cập nhanh"
-          >
-            {[
-              { href: "/tours", label: "Danh mục tour" },
-              { href: "/bookings", label: "Booking" },
-              { href: "/payments", label: "Thanh toán" },
-              { href: "/users", label: "User" },
-              { href: "/suppliers", label: "Nhà cung cấp" },
-            ].map((l) => (
-              <Link
-                key={l.href}
-                href={l.href}
-                className="inline-flex items-center gap-1 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-medium text-white backdrop-blur-sm transition hover:bg-white/15"
-              >
-                {l.label}
-                <ArrowRight className="h-3.5 w-3.5 opacity-80" aria-hidden />
-              </Link>
-            ))}
-          </nav>
-        </div>
-      </section>
-
       <div className="mb-8 flex flex-wrap items-end gap-4 rounded-2xl border border-slate-200/90 bg-white p-4 shadow-sm ring-1 ring-slate-900/[0.04] dark:border-slate-700 dark:bg-slate-900">
         <div>
           <span className="block text-xs font-medium text-slate-500 dark:text-slate-400">
@@ -419,35 +364,11 @@ export function AdminDashboardClient() {
             )}
           </div>
 
-          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/50 p-5 dark:border-slate-600 dark:bg-slate-900/50">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                  Chi phí &amp; lợi nhuận (dự kiến)
-                </p>
-                <p className="mt-1 max-w-2xl text-xs text-slate-600 dark:text-slate-400">
-                  Hệ thống hiện ghi nhận <strong>doanh thu</strong> từ thanh toán thành công. Để có{" "}
-                  <strong>lợi nhuận</strong>, cần nhập/đồng bộ <strong>chi phí tour / nhà cung cấp</strong>{" "}
-                  (COGS) — phần này có thể mở rộng trong đồ án (module kế toán hoặc nhập tay từng tour).
-                </p>
-              </div>
-              <BarChart3 className="h-10 w-10 shrink-0 text-slate-300 dark:text-slate-600" aria-hidden />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-12 gap-6 lg:gap-8">
+          <div className="grid grid-cols-12 items-start gap-6 lg:gap-8">
             <section className="col-span-12 rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm ring-1 ring-slate-900/[0.04] dark:border-slate-700 dark:bg-slate-900 lg:col-span-8">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                    Doanh thu &amp; đơn đặt
-                  </h2>
-                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                    Trục trái: triệu VND (theo <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">paidAtUtc</code>
-                    ). Trục phải: số đơn tạo trong cùng mốc. Tooltip: thêm tỷ lệ TT/đơn (ước lượng).
-                  </p>
-                </div>
-              </div>
+              <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                Doanh thu &amp; đơn đặt
+              </h2>
               <div className="mt-4">
                 <DashboardComboChart data={stats.revenueSeries} />
               </div>
@@ -456,9 +377,6 @@ export function AdminDashboardClient() {
               <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                 Top tour theo số đơn
               </h2>
-              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Theo ngày tạo booking trong khoảng đã chọn
-              </p>
               <div className="mt-4">
                 <TopToursBarChart data={topBar} />
               </div>

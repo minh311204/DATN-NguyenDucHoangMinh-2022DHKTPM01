@@ -59,6 +59,14 @@ export class BookingController {
     }
   }
 
+  @TsRestHandler(bookingContract.previewPromo)
+  previewPromo() {
+    return async ({ body }: { body: Record<string, unknown> }) => {
+      const result = await this.bookingService.previewPromo(body as any)
+      return { status: 200, body: result }
+    }
+  }
+
   @TsRestHandler(bookingContract.createBooking)
   @UseGuards(OptionalJwtAuthGuard)
   createBooking(@CurrentUser() user?: { id: number }) {
@@ -77,6 +85,37 @@ export class BookingController {
         user.id,
       )
       return { status: 200, body }
+    }
+  }
+
+  @TsRestHandler(bookingContract.approveBookingCancellation)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  approveBookingCancellation() {
+    return async ({ params }: { params: { id: string } }) => {
+      const body = await this.bookingService.approveBookingCancellation(
+        Number(params.id),
+      )
+      return { status: 200, body }
+    }
+  }
+
+  @TsRestHandler(bookingContract.rejectBookingCancellation)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  rejectBookingCancellation() {
+    return async ({
+      params,
+      body,
+    }: {
+      params: { id: string }
+      body: Record<string, unknown>
+    }) => {
+      const result = await this.bookingService.rejectBookingCancellation(
+        Number(params.id),
+        body as any,
+      )
+      return { status: 200, body: result }
     }
   }
 

@@ -13,12 +13,15 @@ import type {
   DeleteTourResponse,
   DeleteUserResponse,
   LocationRow,
+  ProvinceRow,
+  RegionRow,
   TourDetail,
   TourImage,
   TourListItem,
   TourListPaginated,
   TourItinerary,
   TourSchedule,
+  TourTagRow,
   UpdateTourItineraryInput,
   UpdateTourScheduleInput,
   UpdateBookingStatusBody,
@@ -207,8 +210,101 @@ export function fetchTourById(id: number, init?: NextFetch) {
   return apiGet<TourDetail>(`/tours/${id}`, init);
 }
 
+/** GET /tours/tags — công khai; `q` tìm theo tên hoặc mô tả. */
+export function fetchTourTags(
+  query: Record<string, string | undefined> = {},
+  init?: NextFetch,
+) {
+  return apiGet<TourTagRow[]>(`/tours/tags${buildQuery(query)}`, init);
+}
+
+/** POST /tours/tags — ADMIN. */
+export function createTourTag(body: {
+  name: string;
+  description?: string | null;
+}) {
+  return apiPost<TourTagRow>("/tours/tags", body);
+}
+
+/** PUT /tours/tags/:id — ADMIN. */
+export function updateTourTag(
+  id: number,
+  body: { name?: string; description?: string | null },
+) {
+  return apiPut<TourTagRow>(`/tours/tags/${id}`, body);
+}
+
+/** DELETE /tours/tags/:id — ADMIN. */
+export function deleteTourTag(id: number) {
+  return apiDelete<{ message: string }>(`/tours/tags/${id}`);
+}
+
 export function fetchLocations(init?: NextFetch) {
   return apiGet<LocationRow[]>(`/locations/locations`, init);
+}
+
+export function fetchRegions(init?: NextFetch) {
+  return apiGet<RegionRow[]>(`/locations/regions`, init);
+}
+
+export function fetchProvinces(init?: NextFetch) {
+  return apiGet<ProvinceRow[]>(`/locations/provinces`, init);
+}
+
+export function createRegion(body: { name?: string | null }) {
+  return apiPost<RegionRow>("/locations/regions", body);
+}
+
+export function updateRegion(id: number, body: { name?: string | null }) {
+  return apiPut<RegionRow>(`/locations/regions/${id}`, body);
+}
+
+export function deleteRegion(id: number) {
+  return apiDelete<{ message: string }>(`/locations/regions/${id}`);
+}
+
+export function createProvince(body: { regionId: number; name: string }) {
+  return apiPost<ProvinceRow>("/locations/provinces", body);
+}
+
+export function updateProvince(
+  id: number,
+  body: { regionId?: number; name?: string },
+) {
+  return apiPut<ProvinceRow>(`/locations/provinces/${id}`, body);
+}
+
+export function deleteProvince(id: number) {
+  return apiDelete<{ message: string }>(`/locations/provinces/${id}`);
+}
+
+export function createLocation(body: {
+  provinceId: number;
+  name: string;
+  latitude?: number;
+  longitude?: number;
+  description?: string;
+  isActive?: boolean;
+}) {
+  return apiPost<LocationRow>("/locations/locations", body);
+}
+
+export function updateLocation(
+  id: number,
+  body: {
+    provinceId?: number;
+    name?: string | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    description?: string | null;
+    isActive?: boolean | null;
+  },
+) {
+  return apiPut<LocationRow>(`/locations/locations/${id}`, body);
+}
+
+export function deleteLocation(id: number) {
+  return apiDelete<{ message: string }>(`/locations/locations/${id}`);
 }
 
 /** POST /tours — cần JWT ADMIN. */
@@ -295,6 +391,18 @@ export function fetchBookingById(id: number, init?: NextFetch) {
 /** PUT /bookings/:id/status — ADMIN. */
 export function updateBookingStatus(id: number, body: UpdateBookingStatusBody) {
   return apiPut<BookingDetail>(`/bookings/${id}/status`, body);
+}
+
+export function approveBookingCancellation(id: number, init?: NextFetch) {
+  return apiPost<BookingDetail>(`/bookings/${id}/cancellation/approve`, {}, init);
+}
+
+export function rejectBookingCancellation(
+  id: number,
+  body: { reason?: string },
+  init?: NextFetch,
+) {
+  return apiPost<BookingDetail>(`/bookings/${id}/cancellation/reject`, body, init);
 }
 
 /** GET /payments/admin — ADMIN: danh sách (phân trang `page`/`pageSize`). */
@@ -384,6 +492,10 @@ export function unwrapSupplierList(
     return { items: data, total: data.length };
   }
   return { items: data.items, total: data.total };
+}
+
+export function fetchSupplierById(id: number, init?: NextFetch) {
+  return apiGet<Supplier>(`/suppliers/${id}`, init);
 }
 
 export function createSupplier(body: CreateSupplierInput) {

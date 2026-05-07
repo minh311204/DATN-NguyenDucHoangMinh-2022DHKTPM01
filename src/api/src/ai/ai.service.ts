@@ -33,7 +33,14 @@ type ResolvedSlots = {
   regionKey?: string
   destination?: string
   departure?: string
+  /** Số tour tối đa (1–25), bắt từ lời user — tương tự LIMIT động */
+  resultLimit?: number
+  /** Ưu tiên sắp xếp sau lọc (Prisma an toàn, không phải text-to-SQL) */
+  sortPreference?: 'price_asc' | 'price_desc' | 'rating_desc' | 'reviews_desc'
 }
+
+/** Kết quả gợi ý tour: strictMatch = lượt tìm chặt (đủ ngày/giá/keyword) có ít nhất một tour */
+type RecommendToursResult = { tours: any[]; strictMatch: boolean }
 
 @Injectable()
 export class AiService {
@@ -307,20 +314,25 @@ export class AiService {
     })
 
     if (shouldRecommend) {
-      const slots = this.mergeSlots(message, llmSlots)
+      const userRegionContext = await this.getRecentUserMessagesConcat(session.id, 12)
+      const slots = this.mergeSlots(message, llmSlots, { regionContext: userRegionContext })
 
-      const tours = userId != null
-        ? await this.recommendToursForUser({ userId, message, slots })
-        : await this.recommendTours(slots)
+      const rec: RecommendToursResult =
+        userId != null
+          ? await this.recommendToursForUser({ userId, message, slots })
+          : await this.recommendTours(slots)
 
-      const finalTours = tours.length > 0 ? tours : await this.getTrendingTours()
+      const searchToursList = rec.tours
+      const want = this.effectiveTourResultLimit(slots, 3)
+      const finalTours =
+        searchToursList.length > 0 ? searchToursList : await this.getTrendingTours(want)
 
-      if (userId != null && tours.length > 0) {
-        await this.trackRecommendations({ userId, tourIds: tours.map((t) => t.id) })
+      if (userId != null && searchToursList.length > 0) {
+        await this.trackRecommendations({ userId, tourIds: searchToursList.map((t) => t.id) })
       }
 
       const followUps = this.buildFollowUps(slots, llmSlots)
-      const matched = tours.length > 0
+      const matched = rec.strictMatch && searchToursList.length > 0
       const personalized = userId != null && !slots.destination && !slots.q
       const fallbackReply = this.buildRecommendationReply({
         slots,
@@ -334,12 +346,14 @@ export class AiService {
       let reply = fallbackReply
       if (isNaturalReplyEnabled()) {
         try {
+          const priorForReply = await this.getPriorConversationTurns(session.id, message)
           const natural = await generateRecommendationReplyNatural({
             userMessage: message,
             fallbackReply,
             followUps,
             matched,
             personalized,
+            conversation: priorForReply,
             tours: finalTours.map((t) => ({
               name: t.name,
               durationDays: t.durationDays ?? null,
@@ -369,10 +383,34 @@ export class AiService {
   // Slot merging: rule-based + LLM
   // ─────────────────────────────────────────────────────────
 
-  private mergeSlots(message: string, llmSlots?: LlmExtractedSlots | null): ResolvedSlots {
+  /**
+   * Gộp các tin nhắn user gần đây (cùng session) để giữ ngữ cảnh địa danh/vùng khi lượt sau
+   * chỉ bổ sung "4 ngày", "5 triệu" mà không nhắc lại "miền Tây".
+   */
+  private async getRecentUserMessagesConcat(sessionId: number, take: number): Promise<string> {
+    const rows = await this.prisma.chatMessage.findMany({
+      where: { sessionId, role: 'user' },
+      orderBy: { createdAtUtc: 'desc' },
+      take,
+      select: { content: true },
+    })
+    return rows
+      .reverse()
+      .map((r) => r.content)
+      .join('\n')
+  }
+
+  private mergeSlots(
+    message: string,
+    llmSlots?: LlmExtractedSlots | null,
+    opts?: { regionContext?: string },
+  ): ResolvedSlots {
     const text = this.normalizeText(message)
     const matchText = this.normalizeForMatch(message)
     const rawLower = message.toLowerCase()
+    const regionSource = opts?.regionContext?.trim() ? opts.regionContext.trim() : message
+    const matchTextRegion = this.normalizeForMatch(regionSource)
+    const rawLowerRegion = regionSource.toLowerCase()
 
     // Days
     const rulesDays = (() => {
@@ -410,16 +448,16 @@ export class AiService {
       : /giá tốt|good value/.test(text) ? 'GOOD_VALUE'
       : undefined
 
-    // Region
+    // Region / điểm đến: nhìn cả lịch sử user (regionContext) để không mất "miền Tây" ở lượt chỉ sửa ngày/giá
     const regionEntry = Object.entries(AiService.REGION_KEYWORDS).find(([k]) =>
-      matchText.includes(this.normalizeForMatch(k)),
+      matchTextRegion.includes(this.normalizeForMatch(k)),
     )
     const regionTerms = regionEntry?.[1]
     const regionKey = regionEntry?.[0]
     const passengerCounts = this.extractPassengerCounts(message, llmSlots)
 
     const ruleDestination =
-      rawLower
+      rawLowerRegion
         .match(
           /(?:muốn\s+)?(?:đi|đến|toi|tới)\s+([a-zà-ỹ0-9\s]+?)(?=\s*[–—-]\s|\s+\d+\s*ng(?:ày|ay)|\s+khoảng|\s+ngân sách|$|,|\.)/i,
         )?.[1]
@@ -488,7 +526,58 @@ export class AiService {
       regionKey,
       destination,
       departure,
+      resultLimit: this.extractResultLimit(message),
+      sortPreference: this.extractSortPreference(matchText),
     }
+  }
+
+  /** Giới hạn số tour (1–25), tương tự LIMIT động trong prompt thương mại */
+  private extractResultLimit(message: string): number | undefined {
+    const t = message.toLowerCase()
+    const patterns = [
+      /(?:lấy|lay|cho)\s*(?:mình|minh|tôi|toi)?\s*(\d{1,2})\s*(?:tour|chuyến|chuyen|kết quả|ket qua)/i,
+      /\b(\d{1,2})\s*tour\b/i,
+      /\btop\s*(\d{1,2})\b/i,
+      /(?:hiện|hien)\s*(\d{1,2})\s*(?:tour|kết quả|ket qua)/i,
+    ]
+    for (const p of patterns) {
+      const m = t.match(p)
+      if (m?.[1]) {
+        const n = parseInt(m[1], 10)
+        if (n >= 1 && n <= 25) return n
+      }
+    }
+    return undefined
+  }
+
+  /** Sắp xếp theo yêu cầu user (matchText đã normalize không dấu) */
+  private extractSortPreference(matchText: string): ResolvedSlots['sortPreference'] {
+    const m = matchText
+    if (
+      /\b(sap xep|sort)\b.*\b(gia|price)\b.*\b(giam|desc|cao xuong|tu cao)\b/.test(m) ||
+      /\b(gia|price)\b.*\b(giam dan|giamd|cao den thap|tu cao xuong thap)\b/.test(m) ||
+      /\b(dat nhat|max price|expensive first)\b/.test(m)
+    ) {
+      return 'price_desc'
+    }
+    if (
+      /\b(sap xep|sort)\b.*\b(gia|price)\b.*\b(tang|asc|re nhat)\b/.test(m) ||
+      /\b(gia|price)\b.*\b(tang dan|re nhat|tu re den dat)\b/.test(m) ||
+      /\b(re nhat|gia re|cheap first)\b/.test(m)
+    ) {
+      return 'price_asc'
+    }
+    if (/\b(danh gia|cao diem|rating|sao)\b/.test(m) && /\b(cao|tot|nhieu|sort|sap xep)\b/.test(m)) {
+      return 'rating_desc'
+    }
+    if (/\b(pho bien|popular|ban chay|nhieu review|hot)\b/.test(m)) {
+      return 'reviews_desc'
+    }
+    return undefined
+  }
+
+  private effectiveTourResultLimit(slots: ResolvedSlots, fallback: number): number {
+    return Math.min(25, Math.max(1, slots.resultLimit ?? fallback))
   }
 
   // ─────────────────────────────────────────────────────────
@@ -621,15 +710,16 @@ export class AiService {
   // Recommend
   // ─────────────────────────────────────────────────────────
 
-  private async recommendTours(slots: ResolvedSlots) {
-    return await this.searchTours(slots, 3)
+  private async recommendTours(slots: ResolvedSlots): Promise<RecommendToursResult> {
+    const take = this.effectiveTourResultLimit(slots, 3)
+    return this.searchToursWithRelaxation(slots, take)
   }
 
   private async recommendToursForUser(input: {
     userId: number
     message: string
     slots: ResolvedSlots
-  }) {
+  }): Promise<RecommendToursResult> {
     const { userId, slots } = input
 
     // Nếu đã có destination/region từ LLM hoặc rule → dùng search trực tiếp
@@ -637,6 +727,8 @@ export class AiService {
     if (hasSpecificTarget) {
       return await this.recommendTours(slots)
     }
+
+    const take = this.effectiveTourResultLimit(slots, 3)
 
     // Booking history based
     const bookings = await this.prisma.booking.findMany({
@@ -646,7 +738,10 @@ export class AiService {
       take: 10,
     })
 
-    if (bookings.length === 0) return await this.getTrendingTours()
+    if (bookings.length === 0) {
+      const trending = await this.getTrendingTours(take)
+      return { tours: trending, strictMatch: false }
+    }
 
     const bookedTourIds = new Set<number>()
     const destinationIds = new Set<number>()
@@ -674,99 +769,88 @@ export class AiService {
       },
       include: { departureLocation: true, destinationLocation: true },
       orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }, { basePrice: 'asc' }],
-      take: 3,
+      take,
     })
 
-    return tours.length > 0 ? this.normalizeTours(tours) : await this.getTrendingTours()
+    if (tours.length === 0) {
+      const trending = await this.getTrendingTours(take)
+      return { tours: trending, strictMatch: false }
+    }
+    return { tours: this.normalizeTours(tours), strictMatch: true }
   }
 
-  private async getTrendingTours() {
+  private async getTrendingTours(take: number = 3) {
+    const t = Math.min(25, Math.max(1, take))
     const tours = await this.prisma.tour.findMany({
       where: { isActive: true },
       include: { departureLocation: true, destinationLocation: true },
       orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }, { basePrice: 'asc' }],
-      take: 3,
+      take: t,
     })
     return this.normalizeTours(tours)
   }
 
   // ─────────────────────────────────────────────────────────
-  // Search core
+  // Search core (Prisma an toàn — không sinh SQL động từ LLM)
   // ─────────────────────────────────────────────────────────
 
-  private async searchTours(slots: ResolvedSlots, take: number) {
-    const now = new Date()
-
-    // Resolve location IDs từ destination/departure/regionTerms
+  /**
+   * Nới lỏng dần nếu rỗng: 0 đủ điều kiện → 1 bỏ số ngày → 2 bỏ ngân sách → 3 keyword OR + mô tả.
+   * Cảm hứng từ prompt e-commerce (partial match / tránh empty) nhưng luôn SELECT qua Prisma.
+   */
+  private async searchToursWithRelaxation(slots: ResolvedSlots, take: number): Promise<RecommendToursResult> {
     const locationIds = await this.resolveLocationIds(slots)
-
-    const and: Prisma.TourWhereInput[] = []
-
-    // Token-based text match (AND: tất cả token phải match ít nhất 1 trong name/location/tag)
-    const tokens = slots.qTokens?.length ? slots.qTokens : undefined
-    if (tokens) {
-      for (const tok of tokens) {
-        and.push({
-          OR: [
-            { name: { contains: tok } },
-            { departureLocation: { name: { contains: tok } } },
-            { destinationLocation: { name: { contains: tok } } },
-            { tags: { some: { tag: { name: { contains: tok } } } } },
-          ],
-        })
+    for (let relax = 0; relax <= 3; relax++) {
+      if (relax === 3 && !this.slotsHadTextualOrGeoFilter(slots, locationIds)) continue
+      const raw = await this.executeTourSearchQuery(slots, locationIds, take, relax)
+      if (raw.length > 0) {
+        const ranked = this.rankAndSliceTourRows(raw, slots, take)
+        return { tours: this.normalizeTours(ranked), strictMatch: relax === 0 }
       }
-    } else if (slots.q) {
-      and.push({
-        OR: [
-          { name: { contains: slots.q } },
-          { departureLocation: { name: { contains: slots.q } } },
-          { destinationLocation: { name: { contains: slots.q } } },
-          { tags: { some: { tag: { name: { contains: slots.q } } } } },
-        ],
-      })
     }
+    return { tours: [], strictMatch: false }
+  }
 
-    // Location ID lookup (từ Province/Location table)
-    if (locationIds.length > 0) {
-      and.push({
-        OR: [
-          { destinationLocationId: { in: locationIds } },
-          { departureLocationId: { in: locationIds } },
-        ],
-      })
-    }
+  private slotsHadTextualOrGeoFilter(slots: ResolvedSlots, locationIds: number[]): boolean {
+    return !!(
+      slots.q ||
+      slots.qTokens?.length ||
+      slots.regionTerms?.length ||
+      locationIds.length > 0
+    )
+  }
 
-    // Region expand
-    if (slots.regionTerms?.length) {
-      const regionOr: Prisma.TourWhereInput[] = slots.regionTerms.flatMap((term) => [
-        { destinationLocation: { name: { contains: term } } },
-        { departureLocation: { name: { contains: term } } },
-        { tags: { some: { tag: { name: { contains: term } } } } },
-        { name: { contains: term } },
-      ])
-      and.push({ OR: regionOr })
-    }
+  private async executeTourSearchQuery(
+    slots: ResolvedSlots,
+    locationIds: number[],
+    take: number,
+    relaxLevel: number,
+  ) {
+    const now = new Date()
+    const and = this.buildTourSearchAndArray(slots, locationIds, relaxLevel)
 
     const where: Prisma.TourWhereInput = {
       isActive: true,
       ...(and.length ? { AND: and } : {}),
-      ...(slots.days != null ? { durationDays: slots.days } : {}),
+      ...(relaxLevel < 1 && slots.days != null ? { durationDays: slots.days } : {}),
       ...(slots.transportType ? { transportType: slots.transportType as any } : {}),
       ...(slots.tourLine ? { tourLine: slots.tourLine as any } : {}),
     }
 
-    if (slots.budget?.min != null && slots.budget?.max != null) {
-      where.basePrice = { gte: slots.budget.min, lte: slots.budget.max }
-    } else if (slots.budget?.max != null) {
-      where.basePrice = { lte: slots.budget.max }
-    } else if (slots.budget?.min != null) {
-      where.basePrice = { gte: slots.budget.min }
-    } else if (slots.budget?.approx != null) {
-      const a = slots.budget.approx
-      where.basePrice = { gte: Math.max(0, a - 2_000_000), lte: a + 2_000_000 }
+    if (relaxLevel < 2) {
+      if (slots.budget?.min != null && slots.budget?.max != null) {
+        where.basePrice = { gte: slots.budget.min, lte: slots.budget.max }
+      } else if (slots.budget?.max != null) {
+        where.basePrice = { lte: slots.budget.max }
+      } else if (slots.budget?.min != null) {
+        where.basePrice = { gte: slots.budget.min }
+      } else if (slots.budget?.approx != null) {
+        const a = slots.budget.approx
+        where.basePrice = { gte: Math.max(0, a - 2_000_000), lte: a + 2_000_000 }
+      }
     }
 
-    const tours = await this.prisma.tour.findMany({
+    return this.prisma.tour.findMany({
       where: {
         ...where,
         schedules: { some: { startDate: { gte: now } } },
@@ -783,22 +867,127 @@ export class AiService {
       orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }, { basePrice: 'asc' }],
       take: Math.max(20, take),
     })
+  }
 
-    // Rank: có ghế trống → sớm nhất → rating cao nhất
-    const scored = tours
-      .map((t: any) => {
-        const s = t.schedules?.[0]
-        const start = s?.startDate ? new Date(s.startDate).getTime() : Number.POSITIVE_INFINITY
-        const seatsLeft = (s?.availableSeats != null && s?.bookedSeats != null)
-          ? Number(s.availableSeats) - Number(s.bookedSeats) : null
-        const seatPenalty = seatsLeft != null ? (seatsLeft > 0 ? 0 : 1e10) : 0
-        return { t, score: seatPenalty + start }
+  private buildTourSearchAndArray(
+    slots: ResolvedSlots,
+    locationIds: number[],
+    relaxLevel: number,
+  ): Prisma.TourWhereInput[] {
+    const and: Prisma.TourWhereInput[] = []
+    const loose = relaxLevel >= 3
+
+    if (!loose) {
+      const tokens = slots.qTokens?.length ? slots.qTokens : undefined
+      if (tokens) {
+        for (const tok of tokens) {
+          and.push({
+            OR: [
+              { name: { contains: tok } },
+              { departureLocation: { name: { contains: tok } } },
+              { destinationLocation: { name: { contains: tok } } },
+              { tags: { some: { tag: { name: { contains: tok } } } } },
+            ],
+          })
+        }
+      } else if (slots.q) {
+        and.push({
+          OR: [
+            { name: { contains: slots.q } },
+            { departureLocation: { name: { contains: slots.q } } },
+            { destinationLocation: { name: { contains: slots.q } } },
+            { tags: { some: { tag: { name: { contains: slots.q } } } } },
+          ],
+        })
+      }
+    } else {
+      const tokens = slots.qTokens?.length ? slots.qTokens : undefined
+      if (tokens?.length) {
+        and.push({
+          OR: tokens.flatMap((tok) => [
+            { name: { contains: tok } },
+            { departureLocation: { name: { contains: tok } } },
+            { destinationLocation: { name: { contains: tok } } },
+            { tags: { some: { tag: { name: { contains: tok } } } } },
+            { description: { contains: tok } },
+          ]),
+        })
+      } else if (slots.q) {
+        and.push({
+          OR: [
+            { name: { contains: slots.q } },
+            { departureLocation: { name: { contains: slots.q } } },
+            { destinationLocation: { name: { contains: slots.q } } },
+            { tags: { some: { tag: { name: { contains: slots.q } } } } },
+            { description: { contains: slots.q } },
+          ],
+        })
+      }
+    }
+
+    if (locationIds.length > 0) {
+      and.push({
+        OR: [
+          { destinationLocationId: { in: locationIds } },
+          { departureLocationId: { in: locationIds } },
+        ],
       })
-      .sort((a, b) => a.score - b.score)
-      .slice(0, take)
-      .map((x) => x.t)
+    }
 
-    return this.normalizeTours(scored)
+    if (slots.regionTerms?.length) {
+      const regionOr: Prisma.TourWhereInput[] = slots.regionTerms.flatMap((term) => [
+        { destinationLocation: { name: { contains: term } } },
+        { departureLocation: { name: { contains: term } } },
+        { tags: { some: { tag: { name: { contains: term } } } } },
+        { name: { contains: term } },
+        ...(loose ? [{ description: { contains: term } } as Prisma.TourWhereInput] : []),
+      ])
+      and.push({ OR: regionOr })
+    }
+
+    return and
+  }
+
+  private rankAndSliceTourRows(raw: any[], slots: ResolvedSlots, take: number): any[] {
+    const pref = slots.sortPreference
+    const rows = raw.map((t: any) => {
+      const s = t.schedules?.[0]
+      const start = s?.startDate ? new Date(s.startDate).getTime() : Number.POSITIVE_INFINITY
+      const seatsLeft =
+        s?.availableSeats != null && s?.bookedSeats != null
+          ? Number(s.availableSeats) - Number(s.bookedSeats)
+          : null
+      const seatPenalty = seatsLeft != null ? (seatsLeft > 0 ? 0 : 1e10) : 0
+      const price = t.basePrice != null ? Number(t.basePrice) : 0
+      const rating = t.ratingAvg ?? 0
+      const reviews = t.totalReviews ?? 0
+      return { t, seatPenalty, start, price, rating, reviews }
+    })
+
+    rows.sort((a, b) => {
+      if (a.seatPenalty !== b.seatPenalty) return a.seatPenalty - b.seatPenalty
+      switch (pref) {
+        case 'price_asc':
+          if (a.price !== b.price) return a.price - b.price
+          break
+        case 'price_desc':
+          if (a.price !== b.price) return b.price - a.price
+          break
+        case 'rating_desc':
+          if (a.rating !== b.rating) return b.rating - a.rating
+          break
+        case 'reviews_desc':
+          if (a.reviews !== b.reviews) return b.reviews - a.reviews
+          break
+        default:
+          break
+      }
+      if (a.start !== b.start) return a.start - b.start
+      if (a.rating !== b.rating) return b.rating - a.rating
+      return a.price - b.price
+    })
+
+    return rows.slice(0, take).map((x) => x.t)
   }
 
   // ─────────────────────────────────────────────────────────
@@ -849,18 +1038,33 @@ export class AiService {
   // LLM helpers
   // ─────────────────────────────────────────────────────────
 
-  private async tryExtractWithLlm(sessionId: number, message: string) {
-    if (!isLlmEnabled()) return null
-
+  /**
+   * Lấy các lượt user/assistant trước tin nhắn hiện tại (đã lưu trong session).
+   * Bỏ bản ghi user cuối nếu trùng `currentUserMessage` để tránh lặp với "Tin nhắn mới" trong llm.ts.
+   */
+  private async getPriorConversationTurns(sessionId: number, currentUserMessage: string) {
     const history = await this.prisma.chatMessage.findMany({
       where: { sessionId },
       orderBy: { createdAtUtc: 'asc' },
-      take: 14,
+      take: 24,
     })
 
-    const conversation = history
+    const turns = history
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+
+    const last = turns[turns.length - 1]
+    const cur = currentUserMessage.trim()
+    if (last?.role === 'user' && last.content.trim() === cur) {
+      return turns.slice(0, -1)
+    }
+    return turns
+  }
+
+  private async tryExtractWithLlm(sessionId: number, message: string) {
+    if (!isLlmEnabled()) return null
+
+    const conversation = await this.getPriorConversationTurns(sessionId, message)
 
     try {
       return await extractSlotsWithLlm({ message, conversation })

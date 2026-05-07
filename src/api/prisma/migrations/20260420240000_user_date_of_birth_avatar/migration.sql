@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE `User` ADD COLUMN `dateOfBirth` DATETIME(3) NULL,
+    ADD COLUMN `avatar` VARCHAR(191) NULL;

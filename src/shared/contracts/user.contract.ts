@@ -3,6 +3,8 @@ import { initContract } from '@ts-rest/core'
 import { z } from 'zod'
 import {
   RegisterPublicSchema,
+  RegisterSuccessSchema,
+  VerifyEmailSchema,
   UserResponseSchema,
   LoginSchema,
   ForgotPasswordSchema,
@@ -22,7 +24,20 @@ const authRoutes = {
     path: '/register',
     body: RegisterPublicSchema,
     responses: withExceptionResponse({
-      201: UserResponseSchema,
+      201: RegisterSuccessSchema,
+    }),
+  },
+
+  verifyEmail: {
+    method: 'POST' as const,
+    path: '/verify-email',
+    body: VerifyEmailSchema,
+    responses: withExceptionResponse({
+      200: z.object({
+        accessToken: z.string(),
+        refreshToken: z.string(),
+        jti: z.string(),
+      }),
     }),
   },
 
@@ -130,6 +145,7 @@ const authRoutes = {
 /** Handler công khai (không Bearer) — dùng trong AuthController.handler() */
 export const authPublicContract = c.router({
   register: authRoutes.register,
+  verifyEmail: authRoutes.verifyEmail,
   login: authRoutes.login,
   refreshToken: authRoutes.refreshToken,
   forgotPassword: authRoutes.forgotPassword,

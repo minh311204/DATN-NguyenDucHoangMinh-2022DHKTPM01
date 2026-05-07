@@ -7,6 +7,12 @@ export const BookingStatusSchema = z.enum([
   'COMPLETED',
 ])
 
+export const BookingCancellationRequestStateSchema = z.enum([
+  'NONE',
+  'PENDING',
+  'REJECTED',
+])
+
 export const BookingPassengerAgeCategorySchema = z.enum([
   'ADULT',
   'CHILD',
@@ -103,6 +109,17 @@ export const BookingResponseSchema = z.object({
     children: z.number(),
     infants: z.number(),
   }),
+  /** Mã giảm giá đã áp dụng (nếu có) */
+  discountCode: z.string().nullable().optional(),
+  discountAmount: z.number().nullable().optional(),
+  singleRoomCount: z.number().int().optional(),
+  singleRoomSupplementAmount: z.number().nullable().optional(),
+  /** Chính sách hủy: số ngày tối thiểu trước giờ khởi hành (server) */
+  cancelMinDaysBeforeDeparture: z.number().int(),
+  cancellationRequestState: BookingCancellationRequestStateSchema,
+  cancellationRequestedAtUtc: z.string().nullable().optional(),
+  cancellationRejectedAtUtc: z.string().nullable().optional(),
+  cancellationApprovedAtUtc: z.string().nullable().optional(),
   schedule: TourScheduleBriefSchema,
   passengers: z.array(BookingPassengerSchema),
 })
@@ -157,6 +174,10 @@ export const CreateBookingSchema = z
     passengerCounts: PassengerCountsSchema,
     passengers: z.array(CreateBookingPassengerSchema).min(1),
     notes: z.string().optional(),
+    /** Số suất phụ thu phòng đơn (≤ số người lớn) */
+    singleRoomCount: z.number().int().min(0).max(100).optional().default(0),
+    /** Mã giảm giá (server kiểm tra bảng PromoCode) */
+    discountCode: z.string().max(64).optional(),
   })
   .superRefine((data, ctx) => {
     const { adults, children, infants } = data.passengerCounts
@@ -205,11 +226,31 @@ export const CreateBookingSchema = z
         path: ['passengers'],
       })
     }
+    const sr = data.singleRoomCount ?? 0
+    if (sr > adults) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Phụ thu phòng đơn không vượt quá số người lớn',
+        path: ['singleRoomCount'],
+      })
+    }
   })
+
+export const PreviewPromoBodySchema = z.object({
+  code: z.string().min(1).max(64),
+  tourId: z.number().int(),
+  subtotalBeforeDiscount: z.number().nonnegative(),
+})
+
+export const PreviewPromoResponseSchema = z.object({
+  discountAmount: z.number(),
+})
 
 export const BookingListQuerySchema = z.object({
   status: BookingStatusSchema.optional(),
   userId: z.coerce.number().int().optional(),
+  /** Admin: lọc đơn đang chờ duyệt hủy */
+  cancellationRequestState: BookingCancellationRequestStateSchema.optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
 })
@@ -223,6 +264,11 @@ export const BookingListPaginatedResponseSchema = z.object({
 
 export const UpdateBookingStatusSchema = z.object({
   status: BookingStatusSchema,
+})
+
+export const RejectBookingCancellationSchema = z.object({
+  /** Ghi chú nội bộ / lý do từ chối (tuỳ chọn) */
+  reason: z.string().max(2000).optional(),
 })
 
 /** Admin: danh sách lịch tour + chỗ còn (không cần load từng booking) */

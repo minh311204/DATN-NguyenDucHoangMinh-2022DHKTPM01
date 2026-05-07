@@ -364,7 +364,7 @@ function buildTransportRows(tour, idMap) {
         supplierId: airline,
         legOrder: 2,
         vehicleType: 'FLIGHT',
-        vehicleDetail: 'Chuyến bay thẳng/1 điểm dừng theo hãng khai thác',
+        vehicleDetail: `VN${String(1660 + (tid % 80)).padStart(4, '0')}`,
         seatClass: 'Economy',
         departurePoint: `Sân bay ${dep}`,
         arrivalPoint: `Sân bay ${dest}`,
@@ -383,6 +383,18 @@ function buildTransportRows(tour, idMap) {
         estimatedHours: 1.0,
         notes: null,
       },
+      {
+        tourId: tid,
+        supplierId: airline,
+        legOrder: 4,
+        vehicleType: 'FLIGHT',
+        vehicleDetail: `VN${String(1390 + (tid % 60)).padStart(4, '0')}`,
+        seatClass: 'Economy',
+        departurePoint: `Sân bay ${dest}`,
+        arrivalPoint: `Sân bay ${dep}`,
+        estimatedHours: fh,
+        notes: 'Chặng bay về.',
+      },
     );
   } else if (tt === 'BUS') {
     const est = Math.min(11.5, 4 + (tid % 7));
@@ -393,8 +405,8 @@ function buildTransportRows(tour, idMap) {
       vehicleType: tid % 2 === 0 ? 'BUS_45' : 'BUS_29',
       vehicleDetail: 'Xe du lịch đời mới, điều hòa, nước uống trên xe',
       seatClass: null,
-      departurePoint: `${dep} – bến xe / điểm đón khách`,
-      arrivalPoint: `${dest} – điểm trả theo chương trình`,
+      departurePoint: dep,
+      arrivalPoint: dest,
       estimatedHours: est,
       notes: 'Có dừng nghỉ giữa chặng theo quy định tài xế.',
     });
@@ -406,7 +418,7 @@ function buildTransportRows(tour, idMap) {
         supplierId: airline,
         legOrder: 1,
         vehicleType: 'FLIGHT',
-        vehicleDetail: 'Chặng bay ngắn / trung bình nối các miền',
+        vehicleDetail: `VN${String(1580 + (tid % 70)).padStart(4, '0')}`,
         seatClass: 'Economy',
         departurePoint: `Sân bay ${dep}`,
         arrivalPoint: `Sân bay khu vực trung chuyển`,
@@ -424,6 +436,18 @@ function buildTransportRows(tour, idMap) {
         arrivalPoint: `${dest} – các điểm trong chương trình`,
         estimatedHours: 2.5,
         notes: 'Phương án MIXED: kết hợp máy bay và ô tô theo lịch khởi hành.',
+      },
+      {
+        tourId: tid,
+        supplierId: airline,
+        legOrder: 3,
+        vehicleType: 'FLIGHT',
+        vehicleDetail: `VN${String(1420 + (tid % 55)).padStart(4, '0')}`,
+        seatClass: 'Economy',
+        departurePoint: `Sân bay ${dest}`,
+        arrivalPoint: `Sân bay ${dep}`,
+        estimatedHours: estimateFlightHours(dep, dest),
+        notes: 'Chặng bay về (MIXED).',
       },
     );
   }

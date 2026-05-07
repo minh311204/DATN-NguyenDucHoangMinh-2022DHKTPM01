@@ -79,8 +79,14 @@ export function TopToursBarChart({
 }: {
   data: { name: string; bookings: number }[];
 }) {
+  const heightPx =
+    data.length === 0 ? 128 : Math.min(400, Math.max(160, data.length * 46 + 72));
+
   return (
-    <div className="h-[260px] w-full min-h-[260px] min-w-0">
+    <div
+      className="w-full min-w-0"
+      style={{ height: heightPx, minHeight: heightPx }}
+    >
       {data.length === 0 ? (
         <p className="flex h-full items-center justify-center text-sm text-slate-500 dark:text-slate-400">
           Chưa có đơn trong khoảng thời gian này.
@@ -90,7 +96,8 @@ export function TopToursBarChart({
           <BarChart
             data={data}
             layout="vertical"
-            margin={{ top: 8, right: 16, left: 8, bottom: 0 }}
+            margin={{ top: 4, right: 12, left: 4, bottom: 4 }}
+            barCategoryGap="12%"
           >
             <CartesianGrid
               strokeDasharray="3 3"
@@ -108,9 +115,10 @@ export function TopToursBarChart({
               dataKey="name"
               className="text-slate-500"
               fontSize={11}
-              width={100}
+              width={148}
               tickLine={false}
               axisLine={false}
+              tick={{ fill: "currentColor" }}
             />
             <Tooltip
               contentStyle={{

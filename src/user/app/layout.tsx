@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { SiteHeader } from "@/components/site-header";
-import { SiteFooter } from "@/components/site-footer";
-import { ChatWidget } from "@/components/chat-widget";
+import { ConditionalAppChrome } from "@/components/conditional-app-chrome";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,10 +28,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} flex min-h-screen flex-col antialiased`}
       >
-        <SiteHeader />
-        <div className="flex-1">{children}</div>
-        <SiteFooter />
-        <ChatWidget />
+        <ConditionalAppChrome>{children}</ConditionalAppChrome>
       </body>
     </html>
   );

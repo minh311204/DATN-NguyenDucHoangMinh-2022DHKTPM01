@@ -11,14 +11,23 @@ import {
   Clock,
   Eye,
   MapPin,
+  Plane,
+  Share2,
+  Star,
   Tag,
   Users,
   Utensils,
 } from "lucide-react";
 import type { TourDetail } from "@/lib/api-types";
 import { formatVnd } from "@/lib/format";
+import { TOUR_SCHEDULE_TAB_HASH } from "@/lib/tour-detail-nav";
+import {
+  SITE_HEADER_HIDE_AFTER_PX,
+  SITE_HEADER_SHOW_WHEN_UNDER_PX,
+} from "@/lib/site-header-scroll";
 import { WishlistButton } from "./wishlist-button";
 import { trackBehavior } from "@/lib/client-preference";
+import { MotionInView } from "@/components/motion-in-view";
 import TourReviews from "./tour-reviews";
 
 /* ────────────────── helpers ────────────────── */
@@ -59,7 +68,205 @@ function durationLabel(days?: number | null): string {
   return `${days}N${Math.max(days - 1, 0)}Đ`;
 }
 
+function addHoursUtc(d: Date, hours: number): Date {
+  return new Date(d.getTime() + hours * 60 * 60 * 1000);
+}
+
+function subHoursUtc(d: Date, hours: number): Date {
+  return new Date(d.getTime() - hours * 60 * 60 * 1000);
+}
+
+function formatClockUtc(d: Date): string {
+  return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+}
+
+/** Bỏ hậu tố mô tả điểm đón/trả (dữ liệu seed/API cũ). */
+function cleanTransportPlaceLabel(s: string): string {
+  return s
+    .replace(/\s*[–-]\s*bến xe\s*\/\s*điểm đón khách\s*$/iu, "")
+    .replace(/\s*[–-]\s*điểm trả theo chương trình\s*$/iu, "")
+    .trim();
+}
+
+function transportPlaceOrFallback(legVal: string | null | undefined, fallback: string): string {
+  const v = legVal?.trim();
+  if (!v) return fallback;
+  const cleaned = cleanTransportPlaceLabel(v);
+  return cleaned || fallback;
+}
+
+/** Tiêu đề khối nội dung kiểu Travela (h3 trái, gạch dưới nhạt) */
+const TD_SECTION_TITLE =
+  "mb-5 border-b border-stone-200 pb-3 text-xl font-bold leading-snug tracking-tight text-stone-900 sm:text-[22px] sm:leading-snug";
+
+function TourStarRow({ rating }: { rating: number | null }) {
+  const r =
+    rating != null
+      ? Math.min(5, Math.max(0, Math.round(Number(rating))))
+      : 0;
+  return (
+    <div
+      className="flex gap-0.5 text-amber-400"
+      aria-label={
+        rating != null ? `Đánh giá trung bình ${rating.toFixed(1)} trên 5` : "Chưa có đánh giá"
+      }
+    >
+      {Array.from({ length: 5 }, (_, i) => (
+        <Star
+          key={i}
+          className={`h-[1.05rem] w-[1.05rem] sm:h-5 sm:w-5 ${i < r ? "fill-amber-400" : "fill-transparent text-amber-200"}`}
+          strokeWidth={1.35}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Chỉ hiển thị mã chuyến (VD: VN1660); bỏ mô tả dài trong vehicleDetail. */
+function extractFlightDisplayCode(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  const s = raw.trim();
+  const m = s.match(/\b([A-Z]{2})\s*(\d{3,4})\b/i);
+  if (m) return `${m[1].toUpperCase()}${m[2]}`;
+  const compact = s.replace(/\s/g, "");
+  if (/^[A-Z]{2}\d{3,4}$/i.test(compact)) return compact.toUpperCase();
+  if (/chuyến|đưa|theo hãng|điểm dừng|chỗ|ghế|xe |bus|ô tô|đón|đưa đoàn/i.test(s)) return null;
+  if (s.length <= 10) return s;
+  return null;
+}
+
 type Schedule = TourDetail["schedules"][number];
+type TransportRow = NonNullable<TourDetail["transports"]>[number];
+
+/** Hai chặng đi / về: giờ khởi hành – đến (máy bay/xe) + mã chuyến nếu có */
+function buildScheduleLegTimes(
+  schedule: Schedule,
+  tour: TourDetail,
+  isFlightTour: boolean,
+): {
+  outbound: {
+    dep: Date;
+    arr: Date;
+    code: string | null;
+    depPlace: string;
+    arrPlace: string;
+  };
+  inbound: {
+    dep: Date;
+    arr: Date;
+    code: string | null;
+    depPlace: string;
+    arrPlace: string;
+  };
+} {
+  const sorted = [...(tour.transports ?? [])].sort((a, b) => a.legOrder - b.legOrder);
+  const flightLegs = sorted.filter((t) => t.vehicleType === "FLIGHT");
+
+  let legOut: TransportRow | undefined;
+  let legIn: TransportRow | undefined;
+
+  if (isFlightTour && flightLegs.length > 0) {
+    legOut = flightLegs[0];
+    legIn = flightLegs[1] ?? flightLegs[0];
+  } else {
+    legOut = sorted[0];
+    legIn = sorted[1] ?? sorted[0];
+  }
+
+  const start = new Date(schedule.startDate);
+  const end = new Date(schedule.endDate);
+
+  const hOut = legOut?.estimatedHours != null ? Number(legOut.estimatedHours) : isFlightTour ? 1.2 : 6;
+  const hIn = legIn?.estimatedHours != null ? Number(legIn.estimatedHours) : isFlightTour ? 1.2 : 6;
+
+  const outDep = start;
+  const outArr = addHoursUtc(outDep, hOut);
+  const inArr = end;
+  const inDep = subHoursUtc(inArr, hIn);
+
+  const outCode = isFlightTour ? extractFlightDisplayCode(legOut?.vehicleDetail) : null;
+  const inCode = isFlightTour ? extractFlightDisplayCode(legIn?.vehicleDetail) : null;
+
+  return {
+    outbound: {
+      dep: outDep,
+      arr: outArr,
+      code: outCode,
+      depPlace: transportPlaceOrFallback(legOut?.departurePoint, tour.departureLocation?.name ?? "—"),
+      arrPlace: transportPlaceOrFallback(legOut?.arrivalPoint, tour.destinationLocation?.name ?? "—"),
+    },
+    inbound: {
+      dep: inDep,
+      arr: inArr,
+      code: inCode,
+      depPlace: transportPlaceOrFallback(legIn?.departurePoint, tour.destinationLocation?.name ?? "—"),
+      arrPlace: transportPlaceOrFallback(legIn?.arrivalPoint, tour.departureLocation?.name ?? "—"),
+    },
+  };
+}
+
+function TransportLegBlock({
+  heading,
+  dateStr,
+  dep,
+  arr,
+  depPlace,
+  arrPlace,
+  variant,
+  lineCode,
+}: {
+  heading: string;
+  dateStr: string;
+  dep: Date;
+  arr: Date;
+  depPlace: string;
+  arrPlace: string;
+  variant: "flight" | "ground";
+  /** Mã chuyến (VD: VN1660) — chỉ dùng khi variant flight */
+  lineCode: string | null;
+}) {
+  const showLocations = variant === "ground";
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {variant === "flight" ? (
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1">
+          <p className="min-w-0 text-sm font-bold leading-snug text-stone-900">
+            {heading} - {dateStr}
+          </p>
+          <span className="flex shrink-0 items-center justify-self-end gap-1.5 whitespace-nowrap text-sm font-bold text-[#0b5ea8]">
+            <Plane className="h-4 w-4 shrink-0" aria-hidden />
+            {lineCode?.trim() || "—"}
+          </span>
+        </div>
+      ) : (
+        <p className="text-xs font-semibold text-stone-900 sm:text-sm">
+          {heading} - {dateStr}
+        </p>
+      )}
+      <div className="mt-2 flex w-full items-baseline justify-between gap-2 tabular-nums">
+        <span className="text-lg font-bold text-stone-900 sm:text-xl">{formatClockUtc(dep)}</span>
+        <span className="text-lg font-bold text-stone-900 sm:text-xl">{formatClockUtc(arr)}</span>
+      </div>
+      <div className="relative mt-3 h-8 w-full shrink-0">
+        <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-stone-300" />
+        <div className="absolute left-0 top-1/2 h-1.5 w-1.5 -translate-y-1/2 bg-stone-500" />
+        <div className="absolute right-0 top-1/2 h-1.5 w-1.5 -translate-y-1/2 bg-stone-500" />
+        {variant === "ground" ? (
+          <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white p-0.5 ring-2 ring-white">
+            <Bus className="h-4 w-4 text-stone-900" aria-hidden />
+          </div>
+        ) : null}
+      </div>
+      {showLocations ? (
+        <div className="mt-2 flex justify-between gap-3 text-sm font-medium text-stone-800">
+          <span className="min-w-0 flex-1 text-left leading-snug">{depPlace}</span>
+          <span className="min-w-0 flex-1 text-right leading-snug">{arrPlace}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /* ────────────────── calendar ────────────────── */
 
@@ -114,7 +321,14 @@ const TABS: { key: TabKey; label: string }[] = [
    MAIN COMPONENT
    ════════════════════════════════════════════════ */
 
-export default function TourDetailClient({ tour }: { tour: TourDetail }) {
+export default function TourDetailClient({
+  tour,
+  initialScheduleYmd,
+}: {
+  tour: TourDetail;
+  /** YYYY-MM-DD (UTC) từ URL — khớp ngày đã chọn trên thẻ tour */
+  initialScheduleYmd?: string | null;
+}) {
   /* ── images ── */
   const allImages = useMemo(() => {
     const imgs = tour.images.map((i) => i.imageUrl);
@@ -188,6 +402,8 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
   function pickDate(ymd: string) {
     const e = scheduleDateMap.get(ymd);
     if (!e || !e.schedules.length) return;
+    const [yy, mm] = ymd.split("-").map(Number);
+    setCalMonth({ year: yy, month: mm });
     setSelDate(ymd);
     setSelSchedId(e.schedules[0].id);
     scheduleRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -281,25 +497,186 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
     tabRefs[t].current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  /* ── fixed tab bar (replaces site header when scrolled past gallery) ── */
+  /** Ghim thanh mục lục (vd. từ nút Chọn ngày) rồi cuộn tới section */
+  function revealTabBarAndScroll(t: TabKey) {
+    setTabBarPinnedByButton(true);
+    scrollTab(t);
+  }
+
+  useEffect(() => {
+    const apply = () => {
+      const rawHash =
+        typeof window !== "undefined"
+          ? window.location.hash.replace(/^#/, "").toLowerCase()
+          : "";
+      const hashWants =
+        rawHash === TOUR_SCHEDULE_TAB_HASH || rawHash === "schedule";
+      const qRaw = initialScheduleYmd?.trim() ?? "";
+      const ymdFromQuery = /^\d{4}-\d{2}-\d{2}$/.test(qRaw) ? qRaw : null;
+
+      if (!hashWants && !ymdFromQuery) return;
+
+      setActiveTab("schedule");
+
+      const pick = (ymd: string) => {
+        const entry = scheduleDateMap.get(ymd);
+        if (!entry?.schedules.length) return false;
+        const [yy, mm] = ymd.split("-").map(Number);
+        setCalMonth({ year: yy, month: mm });
+        setSelDate(ymd);
+        setSelSchedId(entry.schedules[0].id);
+        return true;
+      };
+
+      if (!(ymdFromQuery && pick(ymdFromQuery)) && schedules[0]?.startDate) {
+        pick(utcYmd(new Date(schedules[0].startDate)));
+      }
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          scheduleRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
+    };
+
+    apply();
+    window.addEventListener("hashchange", apply);
+    return () => window.removeEventListener("hashchange", apply);
+  }, [initialScheduleYmd, schedules, scheduleDateMap]);
+
+  /* ── Thanh tab cố định: mở khóa sau sentinel + 2 nấc cuộn (hoặc đã cuộn xuống đủ) / bấm « Chọn ngày »; giữ khi cuộn lại tới Tổng quan; chỉ tắt gần đầu trang ── */
   const sentinelRef = useRef<HTMLDivElement>(null);
-  const [showFixedTabs, setShowFixedTabs] = useState(false);
+  const [sentinelPast, setSentinelPast] = useState(false);
+  const [tabRevealSteps, setTabRevealSteps] = useState(0);
+  const tabWheelLockUntil = useRef(0);
+  const sentinelPastRef = useRef(false);
+  sentinelPastRef.current = sentinelPast;
+  /** Bấm « Chọn ngày khởi hành » / « Chọn ngày » */
+  const [tabBarPinnedByButton, setTabBarPinnedByButton] = useState(false);
+  /**
+   * Đã mở khóa thanh tab: bật một lần thì giữ (cuộn lên Tổng quan không tắt),
+   * chỉ reset khi gần đỉnh trang.
+   */
+  const [stickyTabBarUnlocked, setStickyTabBarUnlocked] = useState(false);
+
+  /** Đã cuộn xuống đủ xa (px) — không phụ thuộc sentinel (màn hình cao vẫn đếm được 2 nấc). */
+  const [scrollDeep, setScrollDeep] = useState(false);
+
+  useEffect(() => {
+    if (
+      tabBarPinnedByButton ||
+      ((sentinelPast || scrollDeep) && tabRevealSteps >= 2)
+    ) {
+      setStickyTabBarUnlocked(true);
+    }
+  }, [tabBarPinnedByButton, sentinelPast, scrollDeep, tabRevealSteps]);
+
+  const showFixedTabs = stickyTabBarUnlocked;
+
+  /** Giống SiteHeader (trang không phải chủ): header cố định còn nhìn thấy khi đầu trang / cuộn nhẹ */
+  const [siteHeaderDocked, setSiteHeaderDocked] = useState(true);
+
+  /** Cuộn: deep flag + chỉ tắt thanh tab khi gần đỉnh trang */
+  useEffect(() => {
+    function onDocScroll() {
+      const y = window.scrollY ?? document.documentElement.scrollTop;
+      setScrollDeep(y >= 120);
+      if (y < 28) {
+        setStickyTabBarUnlocked(false);
+        setTabRevealSteps(0);
+        setTabBarPinnedByButton(false);
+        tabWheelLockUntil.current = 0;
+      }
+    }
+    onDocScroll();
+    window.addEventListener("scroll", onDocScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onDocScroll);
+  }, []);
+
+  useEffect(() => {
+    let raf: number | null = null;
+    function onScroll() {
+      if (raf != null) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = null;
+        const y = window.scrollY ?? document.documentElement.scrollTop;
+        setSiteHeaderDocked((visible) => {
+          if (visible) {
+            return y < SITE_HEADER_HIDE_AFTER_PX;
+          }
+          return y < SITE_HEADER_SHOW_WHEN_UNDER_PX;
+        });
+      });
+    }
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (raf != null) window.cancelAnimationFrame(raf);
+    };
+  }, []);
 
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
     const observer = new IntersectionObserver(
-      ([entry]) => setShowFixedTabs(!entry.isIntersecting),
+      ([entry]) => {
+        const past = !entry.isIntersecting;
+        setSentinelPast(past);
+      },
       { threshold: 0, rootMargin: "-1px 0px 0px 0px" },
     );
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
+  /** Hai nấc cuộn xuống — deps `[]` + ref/`scrollY` để tránh cảnh báo đổi độ dài mảng deps (React Compiler / Strict) */
   useEffect(() => {
-    document.body.classList.toggle("tour-detail-tabs-visible", showFixedTabs);
-    return () => document.body.classList.remove("tour-detail-tabs-visible");
-  }, [showFixedTabs]);
+    let prevGate = false;
+    let markY = 0;
+
+    function gateOpen() {
+      const y = window.scrollY ?? document.documentElement.scrollTop;
+      return sentinelPastRef.current || y >= 120;
+    }
+
+    function syncMark() {
+      const open = gateOpen();
+      if (open && !prevGate) {
+        markY = window.scrollY ?? document.documentElement.scrollTop;
+      }
+      prevGate = open;
+      return open;
+    }
+
+    function onWheel(e: WheelEvent) {
+      if (!syncMark()) return;
+      if (e.deltaY < 26) return;
+      const y = window.scrollY ?? document.documentElement.scrollTop;
+      if (y < 72 && !sentinelPastRef.current) return;
+      const now = performance.now();
+      if (now < tabWheelLockUntil.current) return;
+      tabWheelLockUntil.current = now + 380;
+      setTabRevealSteps((n) => (n >= 2 ? 2 : n + 1));
+    }
+
+    function onScrollExtra() {
+      if (!syncMark()) return;
+      const y = window.scrollY ?? document.documentElement.scrollTop;
+      const extra = y - markY;
+      setTabRevealSteps((n) =>
+        Math.max(n, extra >= 200 ? 2 : extra >= 80 ? 1 : 0),
+      );
+    }
+
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("scroll", onScrollExtra, { passive: true });
+    onScrollExtra();
+    return () => {
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("scroll", onScrollExtra);
+    };
+  }, []);
 
   // Track lượt xem tour
   useEffect(() => {
@@ -314,50 +691,115 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
       ? Math.max(selSchedule.availableSeats - (selSchedule.bookedSeats ?? 0), 0)
       : null;
   const tourCode = `NNSGN${tour.id}`;
+  const selMonthKey = selDate?.slice(0, 7) ?? null;
+
+  const legTimes = useMemo(
+    () => (selSchedule ? buildScheduleLegTimes(selSchedule, tour, isFlight) : null),
+    [selSchedule, tour, isFlight],
+  );
+
+  const destinationLabel = useMemo(
+    () =>
+      tour.destinationLocation?.name?.trim() ||
+      tour.departureLocation?.name?.trim() ||
+      tour.name,
+    [tour.departureLocation?.name, tour.destinationLocation?.name, tour.name],
+  );
+
+  const onShareTour = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const url = window.location.href;
+    const title = tour.name;
+    if (typeof navigator !== "undefined" && navigator.share) {
+      void navigator.share({ title, url }).catch(() => {});
+      return;
+    }
+    void navigator.clipboard.writeText(url).catch(() => {});
+  }, [tour.name]);
 
   /* ════════════════════ RENDER ════════════════════ */
 
   return (
-    <main className="min-h-screen bg-[#f0f0f0] pb-20">
-      {/* ── Fixed full-width tab bar (replaces site header when scrolled) ── */}
+    <main className="min-h-screen bg-[#f3f3f3] pb-20">
+      {/* ── Fixed full-width tab bar khi cuộn (z cao hơn nội dung; header site vẫn hoạt động bình thường) ── */}
       <div
         className={[
-          "fixed left-0 right-0 top-0 z-[60] transition-transform duration-200",
+          "fixed left-0 right-0 z-50 transition-[transform,top] duration-300 ease-out will-change-[transform,top]",
           showFixedTabs ? "translate-y-0" : "-translate-y-full pointer-events-none",
         ].join(" ")}
+        style={{
+          top:
+            showFixedTabs && siteHeaderDocked
+              ? "var(--site-header-h, 96px)"
+              : 0,
+        }}
       >
         <div className="bg-white shadow-sm">
-          <nav className="mx-auto flex w-full max-w-[1100px] border-b border-stone-300 px-4 sm:px-6">
+          <nav
+            aria-label="Mục lục trang tour"
+            className="mx-auto flex w-full max-w-[1100px] border-b border-stone-200 px-4 sm:px-6"
+          >
             {TABS.map((t, i) => (
               <button
                 key={`${t.key}-${i}`}
                 type="button"
+                aria-current={activeTab === t.key ? "page" : undefined}
                 onClick={() => scrollTab(t.key)}
-                className={[
-                  "whitespace-nowrap px-5 py-3.5 text-sm font-semibold transition",
-                  activeTab === t.key
-                    ? "border-b-[3px] border-[#0b5ea8] text-[#0b5ea8]"
-                    : "text-stone-600 hover:text-stone-900",
-                ].join(" ")}
+                className="group relative whitespace-nowrap px-5 py-3.5 text-sm font-semibold text-stone-600 transition-colors duration-200 hover:text-[#0b5ea8]"
               >
-                {t.label}
+                <span className="relative z-10">{t.label}</span>
+                <span
+                  aria-hidden
+                  className="absolute bottom-0 left-2 right-2 h-[3px] origin-left scale-x-0 rounded-sm bg-[#0b5ea8] transition-transform duration-300 ease-out group-hover:scale-x-100"
+                />
               </button>
             ))}
           </nav>
         </div>
       </div>
 
-      <div className="mx-auto max-w-[1100px] px-4 pt-6 sm:px-6">
-        {/* ── Tour title ── */}
-        <h1 className="text-[22px] font-bold leading-snug text-stone-900 sm:text-2xl">{tour.name}</h1>
+      {/* ── Travela-style page banner (điểm đến + breadcrumb) ── */}
+      <div className="relative z-[1] border-b border-stone-200/90 bg-white">
+        <div className="mx-auto max-w-[1100px] px-4 pt-5 pb-6 sm:px-6">
+          <MotionInView axis="left" once className="w-full">
+            <h2 className="mb-3 text-center text-2xl font-bold text-stone-900 sm:text-3xl md:text-[34px] md:leading-tight">
+              {destinationLabel}
+            </h2>
+          </MotionInView>
+          <MotionInView axis="right" once delayMs={120} className="w-full">
+            <nav aria-label="Breadcrumb" className="flex justify-center">
+              <ol className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm text-stone-600">
+                <li>
+                  <Link
+                    href="/"
+                    className="text-[#0b5ea8] transition hover:text-[#063d6b] hover:underline"
+                  >
+                    Trang chủ
+                  </Link>
+                </li>
+                <li className="text-stone-300" aria-hidden>
+                  /
+                </li>
+                <li
+                  className="max-w-[min(100%,360px)] truncate font-medium text-stone-800"
+                  title={tour.name}
+                >
+                  {tour.name}
+                </li>
+              </ol>
+            </nav>
+          </MotionInView>
+        </div>
+      </div>
 
-        {/* ── Main grid: content + sidebar ── */}
-        <div className="mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+      <div className="mx-auto max-w-[1100px] px-4 pt-5 sm:px-6">
+        {/* ── Main grid: content + sidebar (giữ bố cục cũ) ── */}
+        <div className="mt-2 grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
           {/* ═══════ LEFT COLUMN ═══════ */}
           <div>
-            {/* ── Image gallery ── */}
-            <div className="grid grid-cols-[80px_minmax(0,1fr)] gap-2">
-              <div className="flex flex-col gap-2">
+            {/* ── Gallery: thumb + main (giữ layout; bo + khe giống Travela) ── */}
+            <div className="grid grid-cols-[80px_minmax(0,1fr)] gap-2.5">
+              <MotionInView axis="left" once delayMs={0} className="flex flex-col gap-2">
                 {allImages.slice(0, 4).map((url, idx) => {
                   const isOverflow = idx === 3 && allImages.length > 4;
                   return (
@@ -366,15 +808,19 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       type="button"
                       onClick={() => setMainImgIdx(idx)}
                       className={[
-                        "relative h-[88px] w-full overflow-hidden rounded bg-stone-200",
-                        idx === mainImgIdx ? "ring-2 ring-blue-500" : "ring-1 ring-stone-200",
+                        "group relative h-[88px] w-full overflow-hidden rounded-none bg-stone-200 shadow-sm ring-1 ring-stone-200/80 sm:rounded-sm",
+                        idx === mainImgIdx ? "ring-2 ring-[#0b5ea8]" : "",
                       ].join(" ")}
                     >
                       {url ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={url} alt="" className="h-full w-full object-cover" />
+                        <img
+                          src={url}
+                          alt=""
+                          className="h-full w-full object-cover transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-110"
+                        />
                       ) : (
-                        <div className="h-full w-full bg-gradient-to-br from-teal-600 to-cyan-800" />
+                        <div className="h-full w-full bg-gradient-to-br from-teal-600 to-cyan-800 transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-105" />
                       )}
                       {isOverflow && (
                         <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-sm font-bold text-white">
@@ -387,38 +833,89 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                 {allImages.length === 0 && (
                   <div className="h-[88px] w-full rounded bg-stone-200" />
                 )}
-              </div>
+              </MotionInView>
 
-              <div className="relative h-[370px] overflow-hidden rounded-lg bg-stone-200">
-                {allImages[mainImgIdx] ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={allImages[mainImgIdx]} alt={tour.name} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="h-full w-full bg-gradient-to-br from-teal-600 to-cyan-800" />
-                )}
-              </div>
+              <MotionInView axis="right" once delayMs={120} className="relative h-[370px] overflow-hidden rounded-none bg-stone-200 shadow-md ring-1 ring-stone-200/80 sm:rounded-sm">
+                <div className="group h-full w-full">
+                  {allImages[mainImgIdx] ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={allImages[mainImgIdx]}
+                      alt={tour.name}
+                      className="h-full w-full object-cover transition-transform duration-[1.1s] ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-105"
+                    />
+                  ) : (
+                    <div className="h-full w-full bg-gradient-to-br from-teal-600 to-cyan-800 transition-transform duration-[1.1s] ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-105" />
+                  )}
+                </div>
+              </MotionInView>
             </div>
 
+            {/* Tour header — Travela tour-header-area */}
+            <MotionInView axis="up" once className="mt-8 w-full">
+              <div className="flex flex-col gap-6 sm:gap-8 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0 max-w-3xl">
+                  <p className="mb-2 inline-flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-[#0b5ea8]">
+                    <MapPin className="h-4 w-4 shrink-0" aria-hidden />
+                    {destinationLabel}
+                  </p>
+                  <div className="pb-2 pt-1">
+                    <h1 className="text-2xl font-bold leading-tight text-stone-900 sm:text-3xl lg:text-[32px] lg:leading-snug">
+                      {tour.name}
+                    </h1>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    <TourStarRow rating={tour.ratingAvg} />
+                    {tour.totalReviews != null && tour.totalReviews > 0 ? (
+                      <span className="text-sm text-stone-500">
+                        ({tour.totalReviews} đánh giá)
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-x-8 gap-y-3 border-t border-stone-200 pt-4 lg:border-t-0 lg:pt-0 lg:text-end">
+                  <button
+                    type="button"
+                    onClick={onShareTour}
+                    className="inline-flex items-center gap-2 text-sm font-semibold text-stone-800 transition hover:text-[#0b5ea8]"
+                  >
+                    <Share2 className="h-4 w-4 shrink-0" aria-hidden />
+                    Chia sẻ tour
+                  </button>
+                  <WishlistButton tourId={tour.id} tourName={tour.name} variant="text" />
+                </div>
+              </div>
+            </MotionInView>
+
+            <hr className="my-8 border-0 border-t border-stone-200 lg:my-10" />
+
             {/* Sentinel: when this scrolls out of view, fixed tab bar appears */}
-            <div ref={sentinelRef} className="mt-6" />
+            <div ref={sentinelRef} className="mt-2" />
 
             {/* ═══ Section: Tổng quan ═══ */}
-            <section ref={overviewRef} className="mt-6 scroll-mt-16">
-              <div className="rounded border-l-4 border-[#0b5ea8] bg-blue-50/80 p-5">
-                <p className="text-sm font-bold text-stone-800">Điểm nhấn của chương trình</p>
-                {tour.description ? (
-                  <div className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-stone-700">
-                    {tour.description}
-                  </div>
-                ) : (
-                  <p className="mt-3 text-sm italic text-stone-500">Chưa có mô tả cho tour này.</p>
-                )}
-              </div>
+            <section ref={overviewRef} className="mt-8 scroll-mt-16 sm:mt-10">
+              <MotionInView axis="up" once>
+                <div className="tour-details-content rounded-sm border border-stone-100 bg-white p-5 shadow-sm transition-shadow duration-500 hover:shadow sm:p-6">
+                  <h3 className={TD_SECTION_TITLE}>Khám phá tour</h3>
+                  {tour.description ? (
+                    <div className="-mt-2 whitespace-pre-wrap text-sm leading-[1.75] text-stone-700">
+                      {tour.description}
+                    </div>
+                  ) : (
+                    <p className="-mt-2 text-sm italic text-stone-500">Chưa có mô tả cho tour này.</p>
+                  )}
+                </div>
+              </MotionInView>
 
-              <h3 className="mt-10 text-center text-[22px] font-bold uppercase tracking-wide text-stone-900">
-                Thông tin thêm về chuyến đi
-              </h3>
-              <div className="mt-5 grid gap-4 sm:grid-cols-3">
+              <MotionInView axis="up" once delayMs={80} className="mt-12 block w-full">
+                <h3 className={TD_SECTION_TITLE}>Thông tin thêm về chuyến đi</h3>
+              </MotionInView>
+              <MotionInView
+                axis="up"
+                once
+                className="tours-reveal-wrap -mt-2 grid gap-3 sm:grid-cols-3 sm:gap-4"
+                delayMs={40}
+              >
                 {(
                   [
                     { icon: Eye, label: "Điểm tham quan", value: tour.destinationLocation?.name ?? "Đang cập nhật" },
@@ -429,7 +926,10 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                     { icon: Tag, label: "Khuyến mãi", value: "Đã bao gồm ưu đãi trong giá tour" },
                   ] as const
                 ).map((item) => (
-                  <div key={item.label} className="flex items-start gap-3 p-3">
+                  <div
+                    key={item.label}
+                    className="tours-stagger-item flex items-start gap-3 rounded-sm border border-stone-100 bg-white/90 p-4 shadow-sm transition-all duration-300 hover:border-stone-200 hover:bg-white hover:shadow-md"
+                  >
                     <item.icon className="mt-0.5 h-5 w-5 shrink-0 text-[#0b5ea8]" />
                     <div>
                       <p className="text-sm font-bold text-stone-800">{item.label}</p>
@@ -437,176 +937,218 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                     </div>
                   </div>
                 ))}
-              </div>
+              </MotionInView>
             </section>
 
             {/* ═══ Section: Lịch khởi hành ═══ */}
-            <section ref={scheduleRef} className="mt-10 scroll-mt-16">
-              <h2 className="text-center text-[22px] font-bold uppercase tracking-wide text-stone-900">
-                Lịch khởi hành
-              </h2>
+            <section
+              ref={scheduleRef}
+              id={TOUR_SCHEDULE_TAB_HASH}
+              className="mt-10 scroll-mt-16"
+            >
+              <MotionInView axis="up" once className="w-full">
+                <h2 className={TD_SECTION_TITLE}>
+                  Lịch khởi hành
+                </h2>
+              </MotionInView>
 
-              {selDate ? (
-                /* ── Date selected view ── */
-                <div className="mt-5 rounded border border-stone-200 bg-white p-5">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={clearDate}
-                      className="inline-flex items-center gap-1 text-sm font-semibold text-stone-700 hover:text-stone-900"
-                    >
-                      <ChevronLeft className="h-4 w-4" /> Quay lại
-                    </button>
-                    <span className="text-3xl font-bold text-[#d92d20]">
-                      {selDate.split("-").reverse().join("/")}
-                    </span>
-                  </div>
-
-                  {/* Schedule code chips */}
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    {selDateScheds.map((s) => {
-                      const d = new Date(s.startDate);
-                      const code = `${tourCode}-${String(s.id).padStart(3, "0")}-${pad2(d.getUTCDate())}${pad2(d.getUTCMonth() + 1)}${String(d.getUTCFullYear()).slice(2)}`;
+              <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,180px)_minmax(0,1fr)] lg:items-stretch">
+                {/* ── Month column (always visible) — stretches to match right column height ── */}
+                <MotionInView axis="up" once className="h-full min-h-0">
+                  <aside className="flex h-full min-h-0 flex-col rounded-sm border border-stone-200/80 bg-[#fafafa] p-4 shadow-sm transition-shadow duration-500 hover:shadow-md">
+                    <p className="border-b border-stone-200 pb-2 text-center text-sm font-bold text-stone-900">
+                      Chọn tháng
+                    </p>
+                  <div className="mt-3 flex flex-col gap-2">
+                    {availableMonths.map((ym) => {
+                      const [y, m] = ym.split("-");
+                      const yNum = Number(y);
+                      const mNum = Number(m);
+                      const isActive = selMonthKey
+                        ? ym === selMonthKey
+                        : calMonth.year === yNum && calMonth.month === mNum;
                       return (
                         <button
-                          key={s.id}
+                          key={ym}
                           type="button"
-                          onClick={() => setSelSchedId(s.id)}
+                          onClick={() => {
+                            if (selDate) {
+                              if (selMonthKey === ym) {
+                                clearDate();
+                                setCalMonth({ year: yNum, month: mNum });
+                                return;
+                              }
+                              clearDate();
+                            }
+                            setCalMonth({ year: yNum, month: mNum });
+                          }}
                           className={[
-                            "rounded border px-3 py-2 text-left text-xs transition",
-                            s.id === selSchedId
-                              ? "border-[#0b5ea8] bg-blue-50 text-[#0b5ea8] font-bold"
-                              : "border-stone-300 text-stone-600 hover:bg-stone-50",
+                            "rounded-lg px-3 py-2.5 text-sm font-semibold transition",
+                            isActive
+                              ? "bg-[#0b5ea8] text-white shadow-sm"
+                              : "border border-transparent bg-white text-[#0b5ea8] hover:bg-sky-50",
                           ].join(" ")}
                         >
-                          {code}
+                          {mNum}/{yNum}
                         </button>
                       );
                     })}
                   </div>
+                  </aside>
+                </MotionInView>
 
-                  {/* Transport info */}
-                  {selSchedule && (
-                    <div className="mt-6">
-                      <h4 className="text-center text-base font-bold text-stone-800">Phương tiện di chuyển</h4>
-                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                        <div className="rounded border border-stone-200 p-3">
-                          <p className="text-xs text-stone-500">
-                            Ngày đi -{formatVnDate(new Date(selSchedule.startDate))}
-                          </p>
-                          <div className="mt-2 flex items-center gap-4 text-sm">
-                            <div className="text-center">
-                              <p className="font-bold text-stone-900">
-                                {pad2(new Date(selSchedule.startDate).getUTCHours())}:
-                                {pad2(new Date(selSchedule.startDate).getUTCMinutes())}
-                              </p>
-                              <p className="text-xs text-stone-500">
-                                {tour.departureLocation?.name ?? "—"}
-                              </p>
-                            </div>
-                            <div className="flex-1 border-t border-dashed border-stone-300" />
-                            <div className="text-center">
-                              <p className="font-bold text-stone-900">
-                                {tour.destinationLocation?.name ?? "—"}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="rounded border border-stone-200 p-3">
-                          <p className="text-xs text-stone-500">
-                            Ngày về -{formatVnDate(new Date(selSchedule.endDate))}
-                          </p>
-                          <div className="mt-2 flex items-center gap-4 text-sm">
-                            <div className="text-center">
-                              <p className="font-bold text-stone-900">
-                                {tour.destinationLocation?.name ?? "—"}
-                              </p>
-                            </div>
-                            <div className="flex-1 border-t border-dashed border-stone-300" />
-                            <div className="text-center">
-                              <p className="font-bold text-stone-900">
-                                {tour.departureLocation?.name ?? "—"}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                {/* ── Calendar or date detail ── */}
+                <MotionInView axis="up" once delayMs={100} className="h-full min-h-0">
+                {selDate ? (
+                  <div className="flex h-full min-h-0 flex-col rounded-sm border border-stone-200/80 bg-white p-4 shadow-md transition-shadow duration-500 hover:shadow-lg sm:p-5">
+                    <div className="shrink-0 flex flex-wrap items-start justify-between gap-2 border-b border-stone-100 pb-3">
+                      <button
+                        type="button"
+                        onClick={clearDate}
+                        className="inline-flex cursor-pointer items-center gap-1 text-sm font-semibold text-[#0b5ea8] hover:text-[#063d6b]"
+                      >
+                        <ChevronLeft className="h-4 w-4" /> Quay lại
+                      </button>
+                      <span className="text-2xl font-bold tabular-nums text-[#d92d20] sm:text-3xl">
+                        {selDate.split("-").reverse().join("/")}
+                      </span>
                     </div>
-                  )}
 
-                  {/* Price breakdown */}
-                  <div className="mt-6">
-                    <h4 className="text-center text-base font-bold text-[#d92d20]">Giá</h4>
-                    <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3">
-                      <div>
-                        <p className="text-sm font-semibold text-stone-900">Người lớn</p>
-                        <p className="text-xs text-stone-500">(Từ 12 tuổi trở lên)</p>
-                        <p className="mt-1 font-bold text-[#d92d20]">{formatVnd(displayPrice)}</p>
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-stone-900">Em bé</p>
-                        <p className="text-xs text-stone-500">(Dưới 2 tuổi)</p>
-                        <p className="mt-1 font-bold text-[#d92d20]">
-                          {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.5)) : "Liên hệ"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-stone-900">Trẻ em</p>
-                        <p className="text-xs text-stone-500">(Từ 2 đến 11 tuổi)</p>
-                        <p className="mt-1 font-bold text-[#d92d20]">
-                          {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.9)) : "Liên hệ"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-stone-900">Phụ thu phòng đơn</p>
-                        <p className="text-xs text-stone-500">&nbsp;</p>
-                        <p className="mt-1 font-bold text-[#d92d20]">
-                          {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.32)) : "Liên hệ"}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="mt-4 text-xs leading-relaxed text-stone-500">
-                    Tiền bồi dưỡng cho hướng dẫn viên và tài xế địa phương khoảng 133.000 vnd/ngày/khách.
-                  </p>
-                </div>
-              ) : (
-                /* ── Calendar view ── */
-                <div className="mt-5 grid gap-4 lg:grid-cols-[140px_minmax(0,1fr)]">
-                  {/* Month picker */}
-                  <div>
-                    <p className="text-sm font-semibold text-stone-700">Chọn tháng</p>
-                    <div className="mt-2 flex flex-col gap-2">
-                      {availableMonths.map((ym) => {
-                        const [y, m] = ym.split("-");
-                        const isActive = calMonth.year === Number(y) && calMonth.month === Number(m);
+                    <div className="mt-3 shrink-0 flex flex-wrap gap-2">
+                      {selDateScheds.map((s) => {
+                        const d = new Date(s.startDate);
+                        const code = `${tourCode}-${String(s.id).padStart(3, "0")}-${pad2(d.getUTCDate())}${pad2(d.getUTCMonth() + 1)}${String(d.getUTCFullYear()).slice(2)}`;
                         return (
                           <button
-                            key={ym}
+                            key={s.id}
                             type="button"
-                            onClick={() => setCalMonth({ year: Number(y!), month: Number(m!) })}
+                            onClick={() => setSelSchedId(s.id)}
                             className={[
-                              "rounded-lg px-3 py-2 text-sm font-semibold transition",
-                              isActive
-                                ? "bg-[#0b5ea8] text-white"
-                                : "border border-stone-200 bg-white text-stone-700 hover:bg-stone-50",
+                              "rounded-lg border px-2.5 py-1.5 text-left text-[11px] leading-tight transition sm:text-xs",
+                              s.id === selSchedId
+                                ? "border-[#0b5ea8] bg-sky-50 text-[#0b5ea8] font-bold shadow-sm"
+                                : "border-stone-200 text-stone-600 hover:border-stone-300 hover:bg-stone-50",
                             ].join(" ")}
                           >
-                            {Number(m)}/{y}
+                            {code}
                           </button>
                         );
                       })}
                     </div>
-                  </div>
 
-                  {/* Calendar grid */}
-                  <div className="rounded border border-stone-200 bg-white p-5">
-                    <div className="flex items-center justify-center gap-6">
+                    {selSchedule && legTimes && (
+                      <div className="mt-4 shrink-0">
+                        <h4 className="text-center text-sm font-bold text-[#0b5ea8] sm:text-base">
+                          Phương tiện di chuyển
+                        </h4>
+                        {isFlight ? (
+                          <div className="mt-3 grid min-w-0 grid-cols-1 sm:grid-cols-2 sm:items-stretch sm:divide-x sm:divide-stone-200">
+                            <div className="flex min-h-0 min-w-0 flex-col border-stone-200 p-3 sm:border-0 sm:p-4">
+                              <TransportLegBlock
+                                heading="Ngày đi"
+                                dateStr={formatVnDate(legTimes.outbound.dep)}
+                                dep={legTimes.outbound.dep}
+                                arr={legTimes.outbound.arr}
+                                depPlace={legTimes.outbound.depPlace}
+                                arrPlace={legTimes.outbound.arrPlace}
+                                variant="flight"
+                                lineCode={legTimes.outbound.code}
+                              />
+                            </div>
+                            <div className="flex min-h-0 min-w-0 flex-col border-t border-stone-200 p-3 sm:border-t-0 sm:p-4">
+                              <TransportLegBlock
+                                heading="Ngày về"
+                                dateStr={formatVnDate(legTimes.inbound.dep)}
+                                dep={legTimes.inbound.dep}
+                                arr={legTimes.inbound.arr}
+                                depPlace={legTimes.inbound.depPlace}
+                                arrPlace={legTimes.inbound.arrPlace}
+                                variant="flight"
+                                lineCode={legTimes.inbound.code}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 grid min-w-0 grid-cols-1 sm:grid-cols-2 sm:items-stretch sm:divide-x sm:divide-stone-200">
+                            <div className="flex min-h-0 min-w-0 flex-col border-stone-200 p-3 sm:border-0 sm:p-4">
+                              <TransportLegBlock
+                                heading="Ngày đi"
+                                dateStr={formatVnDate(legTimes.outbound.dep)}
+                                dep={legTimes.outbound.dep}
+                                arr={legTimes.outbound.arr}
+                                depPlace={legTimes.outbound.depPlace}
+                                arrPlace={legTimes.outbound.arrPlace}
+                                variant="ground"
+                                lineCode={null}
+                              />
+                            </div>
+                            <div className="flex min-h-0 min-w-0 flex-col border-t border-stone-200 p-3 sm:border-t-0 sm:p-4">
+                              <TransportLegBlock
+                                heading="Ngày về"
+                                dateStr={formatVnDate(legTimes.inbound.dep)}
+                                dep={legTimes.inbound.dep}
+                                arr={legTimes.inbound.arr}
+                                depPlace={legTimes.inbound.depPlace}
+                                arrPlace={legTimes.inbound.arrPlace}
+                                variant="ground"
+                                lineCode={null}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="mt-4 shrink-0 sm:mt-5">
+                      <h4 className="text-center text-sm font-bold text-[#0b5ea8] sm:text-base">Giá</h4>
+                      <div className="mt-2 grid grid-cols-2 gap-0 border-y border-stone-200 sm:mt-3">
+                        <div className="border-b border-stone-200 p-3">
+                          <p className="text-xs font-semibold text-stone-900 sm:text-sm">Người lớn</p>
+                          <p className="text-[11px] text-stone-500 sm:text-xs">Từ 12 tuổi trở lên</p>
+                          <p className="mt-1 text-base font-bold text-[#d92d20] sm:text-lg">{formatVnd(displayPrice)}</p>
+                        </div>
+                        <div className="border-b border-l border-stone-200 p-3">
+                          <p className="text-xs font-semibold text-stone-900 sm:text-sm">Em bé</p>
+                          <p className="text-[11px] text-stone-500 sm:text-xs">Dưới 2 tuổi</p>
+                          <p className="mt-1 text-base font-bold text-[#d92d20] sm:text-lg">
+                            {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.5)) : "Liên hệ"}
+                          </p>
+                        </div>
+                        <div className="p-3">
+                          <p className="text-xs font-semibold text-stone-900 sm:text-sm">Trẻ em</p>
+                          <p className="text-[11px] text-stone-500 sm:text-xs">Từ 2 đến 11 tuổi</p>
+                          <p className="mt-1 text-base font-bold text-[#d92d20] sm:text-lg">
+                            {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.9)) : "Liên hệ"}
+                          </p>
+                        </div>
+                        <div className="border-l border-stone-200 p-3">
+                          <p className="text-xs font-semibold text-stone-900 sm:text-sm">Phụ thu phòng đơn</p>
+                          <p className="text-[11px] text-stone-500 sm:text-xs">&nbsp;</p>
+                          <p className="mt-1 text-base font-bold text-[#d92d20] sm:text-lg">
+                            {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.32)) : "Liên hệ"}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="min-h-0 flex-1" aria-hidden />
+
+                    <div className="mt-3 shrink-0 rounded-lg border border-amber-200/90 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-950 sm:px-3.5 sm:py-2.5 sm:text-xs">
+                      Trường hợp hủy hoặc thay đổi chuyến bay do thời tiết, khai thác hoặc sự cố kỹ thuật,
+                      vui lòng liên hệ hotline{" "}
+                      <a href="tel:1800646888" className="font-semibold text-amber-900 underline">
+                        1800 646 888
+                      </a>{" "}
+                      để được hỗ trợ.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex h-full min-h-0 flex-col rounded-sm border border-stone-200/80 bg-white p-5 shadow-md transition-shadow duration-500 hover:shadow-lg">
+                    <div className="flex shrink-0 items-center justify-center gap-6">
                       <button type="button" onClick={goPrev} className="p-1 text-stone-500 hover:text-stone-800">
                         <ChevronLeft className="h-5 w-5" />
                       </button>
-                      <h3 className="text-lg font-bold uppercase tracking-wide text-stone-900">
+                      <h3 className="text-base font-bold text-stone-900">
                         Tháng {calMonth.month}/{calMonth.year}
                       </h3>
                       <button type="button" onClick={goNext} className="p-1 text-stone-500 hover:text-stone-800">
@@ -614,8 +1156,7 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       </button>
                     </div>
 
-                    {/* Weekday headers */}
-                    <div className="mt-4 grid grid-cols-7 text-center text-sm font-bold">
+                    <div className="mt-4 grid shrink-0 grid-cols-7 text-center text-sm font-bold">
                       {WEEKDAYS.map((d, i) => (
                         <div
                           key={d}
@@ -629,8 +1170,7 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       ))}
                     </div>
 
-                    {/* Date cells */}
-                    <div className="grid grid-cols-7 text-center text-sm">
+                    <div className="grid shrink-0 grid-cols-7 text-center text-sm">
                       {calCells.map((cell, idx) => {
                         const entry = cell.currentMonth ? scheduleDateMap.get(cell.ymd) : undefined;
                         const has = !!entry;
@@ -663,24 +1203,28 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       })}
                     </div>
 
-                    <p className="mt-3 text-xs italic text-[#d92d20]">
+                    <div className="min-h-0 flex-1" aria-hidden />
+
+                    <p className="shrink-0 text-xs italic text-[#d92d20]">
                       Quý khách vui lòng chọn ngày phù hợp
                     </p>
                   </div>
-                </div>
-              )}
+                )}
+                </MotionInView>
+              </div>
             </section>
 
             {/* ═══ Section: Lịch trình ═══ */}
             <section ref={itineraryRef} className="mt-10 scroll-mt-16">
-              <h2 className="text-center text-[22px] font-bold uppercase tracking-wide text-stone-900">
+              <MotionInView axis="up" once className="w-full">
+              <h2 className={TD_SECTION_TITLE}>
                 Lịch Trình
               </h2>
 
               {itineraries.length === 0 ? (
-                <p className="mt-4 text-center text-sm text-stone-500">Chưa có lịch trình cho tour này.</p>
+                <p className="mt-4 text-sm text-stone-500">Chưa có lịch trình cho tour này.</p>
               ) : (
-                <div className="mt-5 space-y-2">
+                <div className="mt-2 space-y-2">
                   {itineraries.map((day) => {
                     const isOpen = openItinId === day.id;
                     const raw = day.title?.trim() || "";
@@ -702,13 +1246,18 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                     const rowTitle = `Ngày ${day.dayNumber}${routePart ? `: ${routePart}` : ""}${mealSuffix}`;
                     const hasAccom = (day.accommodations?.length ?? 0) > 0;
                     return (
-                      <div key={day.id} className="rounded border border-stone-200 overflow-hidden bg-white">
+                      <div
+                        key={day.id}
+                        className="overflow-hidden rounded-sm border border-stone-200 bg-white shadow-sm transition-shadow duration-300 hover:shadow-md"
+                      >
                         <button
                           type="button"
                           onClick={() => setOpenItinId(isOpen ? null : day.id)}
                           className={[
-                            "group flex w-full items-center justify-between gap-3 px-5 py-3.5 text-left text-sm font-medium transition-colors",
-                            isOpen ? "bg-blue-100 text-stone-800" : "text-stone-700 hover:bg-blue-100",
+                            "group flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left text-sm font-semibold transition-colors",
+                            isOpen
+                              ? "border-b border-stone-200 bg-white text-stone-900"
+                              : "bg-[#f5f5f5] text-stone-800 hover:bg-[#ececec]",
                           ].join(" ")}
                         >
                           <span>{rowTitle}</span>
@@ -720,7 +1269,7 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                           />
                         </button>
                         {isOpen && (
-                          <div className="border-t border-stone-100 bg-white px-5 py-4 space-y-4">
+                          <div className="border-t border-stone-100 bg-[#fafafa] px-4 py-4 space-y-4 sm:px-5">
                             {day.description && (
                               <p className="text-sm leading-relaxed text-stone-700 whitespace-pre-wrap">
                                 {day.description}
@@ -777,12 +1326,14 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                   })}
                 </div>
               )}
+              </MotionInView>
             </section>
 
             {/* ═══ Section: Vận chuyển ═══ */}
             {(tour.transports?.length ?? 0) > 0 && (
               <section className="mt-10">
-                <h2 className="text-center text-[22px] font-bold uppercase tracking-wide text-stone-900">
+                <MotionInView axis="up" once className="w-full">
+                <h2 className={TD_SECTION_TITLE}>
                   Chi tiết vận chuyển
                 </h2>
                 <div className="mt-5 space-y-3">
@@ -793,7 +1344,10 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       TRAIN: "Tàu hỏa", BOAT: "Tàu/Thuyền", CABLE_CAR: "Cáp treo",
                     };
                     return (
-                      <div key={tr.id} className="flex items-center gap-4 rounded-lg border border-stone-200 bg-white p-4">
+                      <div
+                        key={tr.id}
+                        className="flex items-center gap-4 rounded-sm border border-stone-200 bg-white p-4 shadow-sm transition-shadow duration-300 hover:shadow-md"
+                      >
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-50 text-lg">
                           {tr.vehicleType === "FLIGHT" ? "✈️" : tr.vehicleType === "BOAT" ? "🚢" : tr.vehicleType === "TRAIN" ? "🚆" : "🚌"}
                         </div>
@@ -813,58 +1367,73 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                     );
                   })}
                 </div>
+                </MotionInView>
               </section>
             )}
 
             {/* ═══ Section: Bao gồm / Không bao gồm ═══ */}
             {(tour.inclusions || tour.exclusions) && (
               <section className="mt-10">
-                <h2 className="text-center text-[22px] font-bold uppercase tracking-wide text-stone-900">
+                <MotionInView axis="up" once className="w-full">
+                <h2 className={TD_SECTION_TITLE}>
                   Giá tour bao gồm
                 </h2>
                 <div className="mt-5 grid gap-4 sm:grid-cols-2">
                   {tour.inclusions && (
-                    <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-                      <p className="mb-2 text-sm font-semibold text-green-800">✅ Bao gồm</p>
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-green-700">
+                    <div className="tour-include-exclude rounded-sm border border-green-200/90 bg-white p-5 shadow-sm">
+                      <h5 className="mb-3 border-b border-green-200/80 pb-2 text-base font-bold text-green-900">
+                        Bao gồm
+                      </h5>
+                      <p className="whitespace-pre-wrap text-sm leading-[1.75] text-green-900/85">
                         {tour.inclusions}
                       </p>
                     </div>
                   )}
                   {tour.exclusions && (
-                    <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-                      <p className="mb-2 text-sm font-semibold text-red-800">❌ Không bao gồm</p>
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-red-700">
+                    <div className="tour-include-exclude rounded-sm border border-red-200/90 bg-white p-5 shadow-sm">
+                      <h5 className="mb-3 border-b border-red-200/80 pb-2 text-base font-bold text-red-900">
+                        Không bao gồm
+                      </h5>
+                      <p className="whitespace-pre-wrap text-sm leading-[1.75] text-red-900/85">
                         {tour.exclusions}
                       </p>
                     </div>
                   )}
                 </div>
                 {tour.cancellationPolicy && (
-                  <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
-                    <p className="mb-2 text-sm font-semibold text-amber-800">⚠️ Chính sách hủy tour</p>
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-amber-700">
+                  <div className="mt-4 rounded-sm border border-amber-200/90 bg-amber-50/80 p-5 shadow-sm">
+                    <h5 className="mb-3 border-b border-amber-300/60 pb-2 text-base font-bold text-amber-900">
+                      Chính sách hủy tour
+                    </h5>
+                    <p className="whitespace-pre-wrap text-sm leading-[1.75] text-amber-950/90">
                       {tour.cancellationPolicy}
                     </p>
                   </div>
                 )}
+                </MotionInView>
               </section>
             )}
 
             {/* ═══ Section: Lưu ý ═══ */}
             <section ref={notesRef} className="mt-10 scroll-mt-16">
-              <h2 className="text-center text-[22px] font-bold uppercase tracking-wide text-stone-900">
+              <MotionInView axis="up" once className="w-full">
+              <h2 className={TD_SECTION_TITLE}>
                 Những thông tin cần lưu ý
               </h2>
               <div className="mt-5 grid gap-2 sm:grid-cols-2 sm:items-start">
                 {NOTE_ITEMS.map((item, idx) => (
-                  <div key={idx} className="rounded border border-stone-200 overflow-hidden bg-white">
+                  <div
+                    key={idx}
+                    className="overflow-hidden rounded-sm border border-stone-200 bg-white shadow-sm"
+                  >
                     <button
                       type="button"
                       onClick={() => setOpenNoteIdx(openNoteIdx === idx ? null : idx)}
                       className={[
-                        "flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm font-medium transition-colors",
-                        openNoteIdx === idx ? "bg-blue-100 text-stone-800" : "text-stone-800 hover:bg-blue-100",
+                        "flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold transition-colors",
+                        openNoteIdx === idx
+                          ? "border-b border-stone-200 bg-white text-stone-900"
+                          : "bg-[#f5f5f5] text-stone-800 hover:bg-[#ececec]",
                       ].join(" ")}
                     >
                       {item.label}
@@ -876,28 +1445,32 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       />
                     </button>
                     {openNoteIdx === idx && (
-                      <div className="border-t border-stone-100 px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap text-stone-600">
+                      <div className="border-t border-stone-100 bg-[#fafafa] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap text-stone-600">
                         {item.content}
                       </div>
                     )}
                   </div>
                 ))}
               </div>
+              </MotionInView>
             </section>
 
             {/* ═══ Section: Chương trình khác ═══ */}
             <section ref={othersRef} className="mt-10 scroll-mt-16">
-              <h2 className="text-center text-[22px] font-bold uppercase tracking-wide text-stone-900">
+              <MotionInView axis="up" once className="w-full">
+              <h2 className={TD_SECTION_TITLE}>
                 Chương trình khác
               </h2>
-              <p className="mt-4 text-center text-sm text-stone-500">
+              <p className="mt-4 max-w-2xl text-sm leading-relaxed text-stone-600">
                 Các chương trình tour tương tự sẽ được cập nhật tại đây.
               </p>
+              </MotionInView>
             </section>
 
             {/* ═══ Section: Đánh giá ═══ */}
             <section ref={reviewsRef} id="reviews" className="mt-10 scroll-mt-16">
-              <h2 className="text-center text-[22px] font-bold uppercase tracking-wide text-stone-900">
+              <MotionInView axis="up" once className="w-full">
+              <h2 className={TD_SECTION_TITLE}>
                 Đánh giá từ khách hàng
               </h2>
               <div className="mt-4">
@@ -907,17 +1480,33 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                   initialTotalReviews={tour.totalReviews}
                 />
               </div>
+              </MotionInView>
             </section>
           </div>
 
           {/* ═══════ RIGHT SIDEBAR (sticky, desktop only) ═══════ */}
           <aside className="hidden lg:block">
-            <div className={["sticky space-y-4", showFixedTabs ? "top-16" : "top-24"].join(" ")}>
-              <div className="rounded border border-stone-200 bg-white p-5">
+            <div
+              className={[
+                "sticky space-y-4 transition-[top] duration-300 ease-out",
+              ].join(" ")}
+              style={{
+                top: showFixedTabs
+                  ? siteHeaderDocked
+                    ? "calc(var(--site-header-h, 96px) + 52px)"
+                    : 52
+                  : 96,
+              }}
+            >
+              <MotionInView axis="up" once delayMs={80} className="w-full">
+              <div className="rounded-sm border border-stone-200/90 bg-[#f8f8f8] p-5 pb-6 shadow-sm transition-shadow duration-500 hover:shadow-md">
+                <h5 className="mb-4 border-b border-stone-300/80 pb-3 text-base font-bold text-stone-900">
+                  Đặt tour
+                </h5>
                 {selSchedule ? (
                   /* ── State 2: date selected ── */
                   <>
-                    <p className="text-sm text-stone-600">Giá:</p>
+                    <p className="text-sm font-semibold text-stone-600">Giá</p>
                     {basePrice != null && displayPrice != null && displayPrice < basePrice && (
                       <p className="text-sm text-stone-400 line-through">{formatVnd(basePrice)}</p>
                     )}
@@ -926,7 +1515,7 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       <span className="text-sm font-normal text-stone-600"> / Khách</span>
                     </p>
 
-                    <div className="mt-4 space-y-2.5 text-sm text-stone-700">
+                    <div className="mt-4 space-y-2.5 border-t border-stone-200/90 pt-4 text-sm text-stone-700">
                       <div className="flex items-start gap-2">
                         <span className="mt-0.5 text-stone-400">⚙️</span>
                         <span>
@@ -978,7 +1567,7 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       </button>
                       <Link
                         href={`/book/${tour.id}?scheduleId=${selSchedule.id}`}
-                        className="flex-1 rounded bg-[#d92d20] px-3 py-2.5 text-center text-sm font-semibold text-white hover:bg-[#b91c1c]"
+                        className="flex-1 rounded bg-[#d92d20] px-3 py-2.5 text-center text-sm font-semibold text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#b91c1c] hover:shadow-lg active:translate-y-0"
                       >
                         Đặt ngay
                       </Link>
@@ -990,13 +1579,13 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                 ) : (
                   /* ── State 1: no date selected ── */
                   <>
-                    <p className="text-sm text-stone-600">Giá từ:</p>
+                    <p className="text-sm font-semibold text-stone-600">Giá từ</p>
                     <p className="text-[28px] font-extrabold leading-tight text-[#d92d20]">
                       {formatVnd(basePrice)}
                       <span className="text-sm font-normal text-stone-600"> / Khách</span>
                     </p>
 
-                    <div className="mt-3 flex items-center gap-2 text-sm text-stone-600">
+                    <div className="mt-3 flex items-center gap-2 border-t border-stone-200/90 pt-3 text-sm text-stone-600">
                       <span>⚙️</span>
                       <span>
                         Mã chương trình: <strong>{tourCode}</strong>
@@ -1005,8 +1594,8 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
 
                     <button
                       type="button"
-                      onClick={() => scrollTab("schedule")}
-                      className="mt-5 w-full rounded bg-[#0b5ea8] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#084f8f]"
+                      onClick={() => revealTabBarAndScroll("schedule")}
+                      className="mt-5 w-full rounded bg-[#0b5ea8] px-4 py-2.5 text-sm font-semibold text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#084f8f] hover:shadow-md active:translate-y-0"
                     >
                       🗓️ Chọn ngày khởi hành
                     </button>
@@ -1016,6 +1605,7 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                   </>
                 )}
               </div>
+              </MotionInView>
             </div>
           </aside>
         </div>
@@ -1033,15 +1623,15 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
         {selSchedule ? (
           <Link
             href={`/book/${tour.id}?scheduleId=${selSchedule.id}`}
-            className="rounded bg-[#d92d20] px-5 py-2.5 text-sm font-semibold text-white"
+            className="rounded bg-[#d92d20] px-5 py-2.5 text-sm font-semibold text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#b91c1c] hover:shadow-lg active:translate-y-0"
           >
             Đặt ngay
           </Link>
         ) : (
           <button
             type="button"
-            onClick={() => scrollTab("schedule")}
-            className="rounded bg-[#0b5ea8] px-5 py-2.5 text-sm font-semibold text-white"
+            onClick={() => revealTabBarAndScroll("schedule")}
+            className="rounded bg-[#0b5ea8] px-5 py-2.5 text-sm font-semibold text-white transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#084f8f] hover:shadow-md active:translate-y-0"
           >
             Chọn ngày
           </button>

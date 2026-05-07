@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prima.service'
+import { NotificationGateway } from './notification.gateway'
 
 function mapNotification(n: any) {
   return {
@@ -14,7 +15,10 @@ function mapNotification(n: any) {
 
 @Injectable()
 export class NotificationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly gateway: NotificationGateway,
+  ) {}
 
   async create(userId: number, data: { title: string; content: string }) {
     const n = await this.prisma.notification.create({
@@ -25,7 +29,10 @@ export class NotificationService {
         isRead: false,
       },
     })
-    return mapNotification(n)
+    const mapped = mapNotification(n)
+    const { count: unreadCount } = await this.getUnreadCount(userId)
+    this.gateway.emitToUser(userId, { notification: mapped, unreadCount })
+    return mapped
   }
 
   async getNotifications(

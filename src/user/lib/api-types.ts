@@ -21,6 +21,8 @@ export type TourListItem = {
   description?: string | null;
   durationDays?: number | null;
   basePrice?: number | null;
+  /** Phụ thu phòng đơn (VND / suất), null = chưa cấu hình */
+  singleRoomSupplement?: number | null;
   maxPeople?: number | null;
   thumbnailUrl?: string | null;
   ratingAvg?: number | null;
@@ -32,6 +34,8 @@ export type TourListItem = {
   isFeatured?: boolean | null;
   departureLocation?: LocationBrief;
   destinationLocation?: LocationBrief;
+  /** Nhãn TourTag — API list tour có thể trả kèm */
+  tags?: { id: number; name: string; description?: string | null }[];
   schedules?: TourScheduleBrief[];
 };
 
@@ -114,7 +118,7 @@ export type TourDetail = TourListItem & {
     status?: string | null;
   }[];
   itineraries: TourItinerary[];
-  tags: { id: number; name: string }[];
+  tags: { id: number; name: string; description?: string | null }[];
   transports?: TourTransport[];
   inclusions?: string | null;
   exclusions?: string | null;
@@ -199,6 +203,12 @@ export type Notification = {
 
 export type UnreadCount = {
   count: number;
+};
+
+/** Payload sự kiện socket `notification` (đồng bộ badge + danh sách). */
+export type NotificationRealtimePayload = {
+  notification: Notification;
+  unreadCount: number;
 };
 
 // ---- Preference ----

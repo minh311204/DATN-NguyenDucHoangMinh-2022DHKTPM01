@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { TourListItem } from "@/lib/api-types";
 import Link from "next/link";
 import { TourDealCard } from "./tour-deal-card";
+import { MotionInView } from "./motion-in-view";
 
 type Props = {
   tours: TourListItem[];
@@ -31,7 +32,7 @@ export function FeaturedToursSection({
       className="border-b border-sky-200/60 py-10 sm:py-14"
       style={{ backgroundColor: "#e0f2f7" }}
     >
-      <div className="mx-auto max-w-6xl px-4 sm:px-6">
+      <MotionInView className="tours-reveal-wrap mx-auto max-w-6xl px-4 sm:px-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1 text-center sm:text-left">
             <h2 className="text-xl font-bold uppercase tracking-wide text-[#0056b3] sm:text-2xl">
@@ -52,7 +53,7 @@ export function FeaturedToursSection({
             <button
               type="button"
               onClick={() => scrollBy(-1)}
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-stone-200/80 bg-white text-stone-600 shadow-sm transition hover:bg-sky-50 hover:text-sky-800"
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-stone-200/80 bg-white text-stone-600 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:bg-sky-50 hover:text-sky-800 active:translate-y-0"
               aria-label="Trước"
             >
               <ChevronLeft className="h-5 w-5" />
@@ -60,7 +61,7 @@ export function FeaturedToursSection({
             <button
               type="button"
               onClick={() => scrollBy(1)}
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-stone-200/80 bg-white text-stone-600 shadow-sm transition hover:bg-sky-50 hover:text-sky-800"
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-stone-200/80 bg-white text-stone-600 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:bg-sky-50 hover:text-sky-800 active:translate-y-0"
               aria-label="Sau"
             >
               <ChevronRight className="h-5 w-5" />
@@ -80,9 +81,9 @@ export function FeaturedToursSection({
             {tours.map((t) => (
               <div
                 key={t.id}
-                className="w-[min(88vw,300px)] shrink-0 snap-start scroll-ml-4 first:scroll-ml-0 sm:w-[300px] sm:scroll-ml-0"
+                className="tours-stagger-item w-[min(88vw,300px)] shrink-0 snap-start scroll-ml-4 first:scroll-ml-0 sm:w-[300px] sm:scroll-ml-0"
               >
-                <TourDealCard tour={t} />
+                <TourDealCard tour={t} homeFeatured />
               </div>
             ))}
           </div>
@@ -91,12 +92,12 @@ export function FeaturedToursSection({
         <div className="mt-10 flex justify-center">
           <Link
             href="/tours?featured=true"
-            className="inline-flex min-w-[200px] items-center justify-center rounded-lg border border-sky-500 bg-sky-100/80 px-8 py-2.5 text-sm font-semibold text-sky-800 shadow-sm transition hover:bg-sky-200/90"
+            className="inline-flex min-w-[200px] items-center justify-center rounded-lg border border-sky-500 bg-sky-100/80 px-8 py-2.5 text-sm font-semibold text-sky-800 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:bg-sky-200/90 hover:shadow-md active:translate-y-0"
           >
             Xem tất cả
           </Link>
         </div>
-      </div>
+      </MotionInView>
     </section>
   );
 }

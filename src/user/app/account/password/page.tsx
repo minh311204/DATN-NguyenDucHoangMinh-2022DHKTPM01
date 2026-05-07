@@ -4,7 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import { getMe, postChangePassword } from "@/lib/client-auth";
+import {
+  ensureSessionFresh,
+  getMe,
+  postChangePassword,
+} from "@/lib/client-auth";
 import {
   AUTH_KEYS,
   clearAuthStorage,
@@ -22,20 +26,28 @@ export default function ChangePasswordPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    let alive = true;
     setMounted(true);
-    if (!hasAccessToken()) {
-      setLoggedIn(false);
-      return;
-    }
-    setLoggedIn(true);
-    const token = localStorage.getItem(AUTH_KEYS.accessToken);
-    if (!token) {
-      setHasPassword(true);
-      return;
-    }
-    void getMe(token).then((me) => {
+    void (async () => {
+      await ensureSessionFresh();
+      if (!alive) return;
+      if (!hasAccessToken()) {
+        setLoggedIn(false);
+        return;
+      }
+      setLoggedIn(true);
+      const token = localStorage.getItem(AUTH_KEYS.accessToken);
+      if (!token) {
+        setHasPassword(true);
+        return;
+      }
+      const me = await getMe(token);
+      if (!alive) return;
       if (me.ok) setHasPassword(me.data.hasPassword);
-    });
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -65,6 +77,10 @@ export default function ChangePasswordPage() {
         setOk(res.data.message);
         clearAuthStorage();
         setTimeout(() => router.push("/login"), 2000);
+        return;
+      }
+      if ("networkError" in res && res.networkError) {
+        setErr("Không kết nối được API. Kiểm tra backend đang chạy và NEXT_PUBLIC_API_URL.");
         return;
       }
       setErr(errorMessage(res.body));

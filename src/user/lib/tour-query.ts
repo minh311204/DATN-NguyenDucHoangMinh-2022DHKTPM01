@@ -32,5 +32,10 @@ export function parseTourListQuery(
   const featured = get("featured");
   if (featured === "true" || featured === "1") q.featured = "true";
 
+  const tagId = get("tagId");
+  if (tagId && /^\d+$/.test(String(tagId))) {
+    q.tagId = String(Number(tagId));
+  }
+
   return q;
 }

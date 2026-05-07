@@ -35,12 +35,11 @@ function roleBadge(role: AdminUser["role"]) {
     : "bg-violet-50 text-violet-700 border-violet-200";
 }
 
-const PAGE_SIZE = 10;
-
 export default function AdminUsersPage() {
   const [rows, setRows] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -50,7 +49,7 @@ export default function AdminUsersPage() {
     setLoading(true);
     const res = await fetchUsers({
       page: String(page),
-      pageSize: String(PAGE_SIZE),
+      pageSize: String(pageSize),
     });
     if (res.ok) {
       const { items, total: t } = unwrapUserList(res.data);
@@ -58,7 +57,7 @@ export default function AdminUsersPage() {
       setTotal(t);
     } else setErr(errorMessage(res.body, res.status));
     setLoading(false);
-  }, [page]);
+  }, [page, pageSize]);
 
   useEffect(() => {
     void load();
@@ -81,9 +80,7 @@ export default function AdminUsersPage() {
 
   return (
     <>
-      <AdminHeader
-        title="Quản lý user"
-      />
+      <AdminHeader title="Quản lý người dùng" />
       <main className="flex-1 overflow-auto p-5 sm:p-6">
         {err ? (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -163,9 +160,14 @@ export default function AdminUsersPage() {
             </table>
             <AdminPagination
               page={page}
-              pageSize={PAGE_SIZE}
+              pageSize={pageSize}
               total={total}
+              itemsLabel="user"
               onPageChange={setPage}
+              onPageSizeChange={(n) => {
+                setPageSize(n);
+                setPage(1);
+              }}
             />
           </div>
         )}

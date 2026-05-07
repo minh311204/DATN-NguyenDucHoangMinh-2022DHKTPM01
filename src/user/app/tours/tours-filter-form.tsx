@@ -3,13 +3,17 @@ import type { LocationRow } from "@/lib/api-types";
 type Initial = {
   departureLocationId?: string;
   destinationLocationId?: string;
+  tagId?: string;
   budget?: string;
   departureDate?: string;
   q?: string;
 };
 
+type TagOption = { id: number; name: string };
+
 type Props = {
   locations: LocationRow[];
+  tags: TagOption[];
   initial: Initial;
 };
 
@@ -21,12 +25,12 @@ const budgets = [
   { value: "over_20m", label: "Trên 20 triệu" },
 ];
 
-export function ToursFilterForm({ locations, initial }: Props) {
+export function ToursFilterForm({ locations, tags, initial }: Props) {
   return (
     <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
       <form method="get" className="space-y-4">
         <p className="text-sm font-semibold text-stone-800">Bộ lọc</p>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <div>
             <label className="mb-1 block text-xs font-medium text-stone-500">
               Điểm khởi hành
@@ -57,6 +61,23 @@ export function ToursFilterForm({ locations, initial }: Props) {
               {locations.map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.name ?? `Location #${l.id}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-stone-500">
+              Danh mục nhãn
+            </label>
+            <select
+              name="tagId"
+              defaultValue={initial.tagId ?? ""}
+              className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900"
+            >
+              <option value="">Tất cả</option>
+              {tags.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
                 </option>
               ))}
             </select>

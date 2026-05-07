@@ -34,7 +34,9 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/platform-socket.io": "^11.1.19",
     "@nestjs/schedule": "^6.1.1",
+    "@nestjs/websockets": "^11.1.19",
     "@prisma/adapter-mariadb": "^7.5.0",
     "@prisma/client": "^7.4.2",
     "@ts-rest/core": "^3.52.1",
@@ -50,6 +52,7 @@
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "socket.io": "^4.8.3",
     "vnpay": "^2.4.4",
     "zod": "^3.25.76"
   },

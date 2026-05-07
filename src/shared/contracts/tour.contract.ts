@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { withExceptionResponse } from './helpers'
 import {
   CreateTourTagSchema,
+  UpdateTourTagSchema,
   TourTagResponseSchema,
   TourImageResponseSchema,
   CreateTourImageSchema,
@@ -47,6 +48,7 @@ const tourVideoParams = z.object({
   id: z.coerce.number().int(),
   videoId: z.coerce.number().int(),
 })
+const tourTagParams = z.object({ id: z.coerce.number().int() })
 const scheduleParams = z.object({ scheduleId: z.coerce.number().int() })
 const itineraryParams = z.object({ itineraryId: z.coerce.number().int() })
 const transportParams = z.object({ transportId: z.coerce.number().int() })
@@ -58,6 +60,9 @@ export const tourContract = c.router({
   getTourTags: {
     method: 'GET',
     path: '/tags',
+    query: z.object({
+      q: z.string().optional(),
+    }),
     responses: withExceptionResponse({
       200: z.array(TourTagResponseSchema),
     }),
@@ -69,6 +74,25 @@ export const tourContract = c.router({
     body: CreateTourTagSchema,
     responses: withExceptionResponse({
       201: TourTagResponseSchema,
+    }),
+  },
+
+  updateTourTag: {
+    method: 'PUT',
+    path: '/tags/:id',
+    pathParams: tourTagParams,
+    body: UpdateTourTagSchema,
+    responses: withExceptionResponse({
+      200: TourTagResponseSchema,
+    }),
+  },
+
+  deleteTourTag: {
+    method: 'DELETE',
+    path: '/tags/:id',
+    pathParams: tourTagParams,
+    responses: withExceptionResponse({
+      200: z.object({ message: z.string() }),
     }),
   },
 

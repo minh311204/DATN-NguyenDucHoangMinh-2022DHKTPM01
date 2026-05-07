@@ -24,6 +24,8 @@ export type TourListItem = {
   isFeatured?: boolean | null;
   departureLocation?: LocationBrief;
   destinationLocation?: LocationBrief;
+  /** Nhãn TourTag — list tour từ API có thể kèm */
+  tags?: { id: number; name: string; description?: string | null }[];
   /** ISO — từ API list tour */
   createdAtUtc?: string | null;
 };
@@ -56,16 +58,34 @@ export type TourSchedule = {
   status?: string | null;
 };
 
+export type TourTagRow = {
+  id: number;
+  name: string;
+  description?: string | null;
+  tourCount?: number;
+};
+
 export type TourDetail = TourListItem & {
   images: TourImage[];
   videos: { id: number; tourId: number; videoUrl: string }[];
   schedules: TourSchedule[];
   itineraries: TourItinerary[];
-  tags: { id: number; name: string }[];
+  tags: { id: number; name: string; description?: string | null }[];
   transports: TourTransport[];
   inclusions?: string | null;
   exclusions?: string | null;
   cancellationPolicy?: string | null;
+};
+
+export type RegionRow = {
+  id: number;
+  name?: string | null;
+};
+
+export type ProvinceRow = {
+  id: number;
+  regionId: number;
+  name?: string | null;
 };
 
 export type LocationRow = {
@@ -317,6 +337,8 @@ export type DeleteUserResponse = {
 
 export type BookingStatus = "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED";
 
+export type BookingCancellationRequestState = "NONE" | "PENDING" | "REJECTED";
+
 export type BookingPassengerRow = {
   id: number;
   bookingId: number;
@@ -352,6 +374,12 @@ export type BookingListItem = {
   bookingDateUtc?: string | null;
   totalAmount?: number | null;
   status: BookingStatus;
+  /** Chính sách hủy — số ngày tối thiểu trước khởi hành (theo server) */
+  cancelMinDaysBeforeDeparture: number;
+  cancellationRequestState: BookingCancellationRequestState;
+  cancellationRequestedAtUtc?: string | null;
+  cancellationRejectedAtUtc?: string | null;
+  cancellationApprovedAtUtc?: string | null;
   contact: {
     fullName: string;
     email: string;

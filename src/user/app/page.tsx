@@ -1,7 +1,11 @@
 import { HeroSearchBar } from "@/components/hero-search-bar";
+import { HomePaymentSuccessFallbackStrip } from "@/components/home-payment-success-fallback-strip";
+import { HomeHeroTravelaReveal } from "@/components/home-hero-travela-reveal";
 import { FavoriteDestinations } from "@/components/favorite-destinations";
 import { HomeExplorePromo } from "@/components/home-explore-promo";
+import { HomeAboutSnapshotSection } from "@/components/home-about-snapshot-section";
 import { FeaturedToursSection } from "@/components/featured-tours-section";
+import { HomeFeaturesSection } from "@/components/home-features-section";
 import { fetchTours, unwrapTourListResponse } from "@/lib/server-api";
 import { errorMessage } from "@/lib/format";
 
@@ -22,11 +26,23 @@ export default async function HomePage() {
 
   return (
     <>
-      {/* Hero: ~nửa màn hình — ảnh cover khung; pt = chừa header fixed */}
-      <section className="relative flex min-h-[50svh] flex-col overflow-hidden border-b border-white/10 bg-[#1a1d2e] pb-8 pt-24 text-white sm:pb-12 sm:pt-28">
-        {/* Ảnh nền — cover theo chiều cao section (= ít nhất 1 màn hình) */}
+      <HomePaymentSuccessFallbackStrip />
+
+      <HomeHeroTravelaReveal
+        kicker={
+          <p className="motion-fade-in-up text-sm font-semibold uppercase tracking-[0.25em] text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.85)] sm:text-base">
+            Đặt tour trực tuyến
+          </p>
+        }
+        subline={
+          <p className="text-pretty text-sm font-normal text-white/95 [text-shadow:0_1px_8px_rgba(0,0,0,0.45)] sm:text-base">
+            Giá tốt – hỗ trợ 24/7 – khắp mọi miền
+          </p>
+        }
+        search={<HeroSearchBar className="w-full" />}
+      >
         <div
-          className="pointer-events-none absolute inset-0"
+          className="motion-hero-bg pointer-events-none absolute inset-0 origin-center"
           style={{
             backgroundColor: "#1a1d2e",
             backgroundImage: `url('${HERO_BG}')`,
@@ -37,27 +53,15 @@ export default async function HomePage() {
           }}
           aria-hidden
         />
-        {/* Phủ tối dịu — gần ảnh mẫu (chữ trắng đọc rõ) */}
         <div
           className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/45 via-black/25 to-black/55"
           aria-hidden
         />
-        <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-1 flex-col justify-center px-4 sm:px-6">
-          <div className="mx-auto w-full max-w-[min(100%,56rem)] text-center">
-            <p className="text-sm font-semibold uppercase tracking-[0.25em] text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.85)] sm:text-base">
-              Đặt tour trực tuyến
-            </p>
-            <p className="mx-auto mt-3 max-w-2xl text-pretty text-sm font-normal text-white/95 [text-shadow:0_1px_8px_rgba(0,0,0,0.45)] sm:mt-4 sm:text-base">
-              Giá tốt – hỗ trợ 24/7 – khắp nơi
-            </p>
-          </div>
-          <div className="mx-auto mt-6 w-full max-w-5xl sm:mt-8">
-            <HeroSearchBar className="w-full" />
-          </div>
-        </div>
-      </section>
+      </HomeHeroTravelaReveal>
 
       <HomeExplorePromo />
+
+      <HomeAboutSnapshotSection />
 
       <FeaturedToursSection
         tours={featured}
@@ -76,6 +80,8 @@ export default async function HomePage() {
           ) : null
         }
       />
+
+      <HomeFeaturesSection />
 
       <FavoriteDestinations />
     </>

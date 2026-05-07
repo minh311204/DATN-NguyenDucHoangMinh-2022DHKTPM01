@@ -4,17 +4,16 @@ import type { ComponentType } from "react";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  BadgeCheck,
   ChevronLeft,
   ChevronRight,
   MapPin,
   Mountain,
   Palmtree,
   Percent,
-  Sparkles,
   UtensilsCrossed,
   Waves,
 } from "lucide-react";
+import { MotionInView } from "./motion-in-view";
 
 /** Xanh chủ đạo */
 const BRAND = "#0056b3";
@@ -108,7 +107,7 @@ const EXPLORE_CARDS: {
 function PromoTile({ b }: { b: BannerMini }) {
   return (
     <div
-      className="relative min-h-[140px] overflow-hidden rounded-lg bg-gradient-to-br px-4 py-4 text-white shadow-md sm:min-h-[160px]"
+      className="motion-promo-tile-enter relative min-h-[140px] overflow-hidden rounded-lg bg-gradient-to-br px-4 py-4 text-white shadow-md transition duration-300 hover:-translate-y-0.5 hover:shadow-lg sm:min-h-[160px]"
       style={{
         backgroundImage: `linear-gradient(135deg, ${BRAND} 0%, #003d82 55%, #001a38 100%)`,
       }}
@@ -165,21 +164,24 @@ export function HomeExplorePromo() {
   }, [slideCount]);
 
   return (
-    <section className="border-b border-stone-200/80 bg-white">
-      <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
+    <section
+      className="w-full min-w-0 border-b border-sky-200/60"
+      style={{ backgroundColor: "#e0f2f7" }}
+    >
+      <MotionInView className="mx-auto w-full max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
         {/* Hàng icon — gợi ý theo du lịch trong nước */}
         <div className="grid grid-cols-3 gap-3 sm:grid-cols-6 sm:gap-4">
           {CATEGORIES.map(({ Icon, label, href }) => (
             <Link
               key={label}
               href={href}
-              className="group flex flex-col items-center gap-2 rounded-xl border border-transparent bg-sky-50/80 py-3 transition hover:border-sky-200 hover:bg-sky-100/90"
+              className="group flex flex-col items-center gap-2 rounded-xl border border-white/60 bg-white/90 py-3 shadow-sm ring-1 ring-sky-200/50 transition duration-300 hover:-translate-y-1 hover:bg-white hover:shadow-md"
             >
               <span
-                className="flex h-12 w-12 items-center justify-center rounded-xl bg-white shadow-sm ring-1 ring-sky-100 transition group-hover:ring-sky-200 sm:h-14 sm:w-14"
+                className="flex h-12 w-12 items-center justify-center rounded-xl bg-white shadow-sm ring-1 ring-sky-100 transition duration-300 group-hover:scale-110 group-hover:ring-sky-200 sm:h-14 sm:w-14"
                 style={{ color: BRAND }}
               >
-                <Icon className="h-6 w-6 sm:h-7 sm:w-7" strokeWidth={1.75} />
+                <Icon className="h-6 w-6 transition duration-300 group-hover:scale-105 sm:h-7 sm:w-7" strokeWidth={1.75} />
               </span>
               <span className="text-center text-[10px] font-semibold uppercase leading-tight tracking-wide text-stone-800 sm:text-[11px]">
                 {label}
@@ -202,7 +204,7 @@ export function HomeExplorePromo() {
                 type="button"
                 onClick={() => setBannerSlide(i)}
                 className={
-                  "h-2 w-2 rounded-full transition " +
+                  "h-2 w-2 rounded-full transition duration-300 " +
                   (i === bannerSlide
                     ? "w-6 bg-[#0056b3]"
                     : "bg-stone-300 hover:bg-stone-400")
@@ -230,7 +232,7 @@ export function HomeExplorePromo() {
             <button
               type="button"
               onClick={() => goExplore(-1)}
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 shadow-sm transition hover:bg-stone-50 hover:text-[#0056b3]"
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:bg-stone-50 hover:text-[#0056b3] active:translate-y-0"
               aria-label="Xem nhóm trước"
             >
               <ChevronLeft className="h-5 w-5" strokeWidth={2} />
@@ -238,7 +240,7 @@ export function HomeExplorePromo() {
             <button
               type="button"
               onClick={() => goExplore(1)}
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 shadow-sm transition hover:bg-stone-50 hover:text-[#0056b3]"
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:bg-stone-50 hover:text-[#0056b3] active:translate-y-0"
               aria-label="Xem nhóm sau"
             >
               <ChevronRight className="h-5 w-5" strokeWidth={2} />
@@ -252,10 +254,10 @@ export function HomeExplorePromo() {
               <Link
                 key={card.title}
                 href={card.href}
-                className="group relative aspect-[4/3] overflow-hidden rounded-2xl shadow-md ring-1 ring-black/5 transition hover:shadow-lg hover:ring-[#0056b3]/25"
+                className="group relative aspect-[4/3] overflow-hidden rounded-2xl shadow-md ring-1 ring-black/5 transition duration-300 hover:-translate-y-1 hover:shadow-xl hover:ring-[#0056b3]/25"
               >
                 <div
-                  className="absolute inset-0 bg-cover bg-center transition duration-500 group-hover:scale-105"
+                  className="absolute inset-0 bg-cover bg-center transition duration-700 ease-out group-hover:scale-110"
                   style={{ backgroundImage: `url(${card.image})` }}
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-transparent" />
@@ -266,7 +268,7 @@ export function HomeExplorePromo() {
             ),
           )}
         </div>
-      </div>
+      </MotionInView>
     </section>
   );
 }

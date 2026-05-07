@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE_URL } from "@/lib/env";
 import { errorMessage } from "@/lib/format";
+import { MotionInView } from "./motion-in-view";
 
 type Province = { id: number; regionId: number; name?: string | null };
 
@@ -274,34 +275,42 @@ export function FavoriteDestinations() {
 
   return (
     <section className="mx-auto max-w-[1312px] px-4 py-12 sm:px-6">
-      <div className="text-center">
-        <h2 className="text-2xl text-sky-700">ĐIỂM ĐẾN YÊU THÍCH</h2>
-        <p className="mt-2 text-sm text-stone-600">
-          Hãy chọn một điểm đến du lịch nổi tiếng dưới đây để khám phá các chuyến đi độc quyền của chúng tôi với mức giá vô cùng hợp lý.
-        </p>
-      </div>
+      <MotionInView>
+        <div className="text-center">
+          <h2 className="text-2xl text-sky-700">ĐIỂM ĐẾN YÊU THÍCH</h2>
+          <p className="mt-2 text-sm text-stone-600">
+            Hãy chọn một điểm đến du lịch nổi tiếng dưới đây để khám phá các chuyến đi độc quyền của chúng tôi với mức giá vô cùng hợp lý.
+          </p>
+        </div>
 
-      <div className="mt-6 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm font-medium text-stone-600">
-        {regionTargets.map((rt) => {
-          const active = rt.key === activeTabKey;
-          return (
-            <button
-              key={rt.key}
-              type="button"
-              onClick={() => setActiveTabKey(rt.key)}
-              className={active ? "text-sky-800" : "hover:text-sky-700"}
-              style={{
-                borderBottom: active ? "2px solid #0ea5e9" : "2px solid transparent",
-                paddingBottom: 10,
-              }}
-            >
-              {rt.label}
-            </button>
-          );
-        })}
-      </div>
+        <div className="mt-6 flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm font-medium text-stone-600">
+          {regionTargets.map((rt) => {
+            const active = rt.key === activeTabKey;
+            return (
+              <button
+                key={rt.key}
+                type="button"
+                onClick={() => setActiveTabKey(rt.key)}
+                className={
+                  (active ? "text-sky-800" : "text-stone-600 hover:text-sky-700") +
+                  " transition-colors duration-200"
+                }
+                style={{
+                  borderBottom: active ? "2px solid #0ea5e9" : "2px solid transparent",
+                  paddingBottom: 10,
+                }}
+              >
+                {rt.label}
+              </button>
+            );
+          })}
+        </div>
+      </MotionInView>
 
-      <div className="mt-8">
+      <MotionInView
+        className="fav-dest-wrap mt-8"
+        key={activeTabKey}
+      >
         {provincesWithImage.length === 0 ? (
           <p className="text-center text-sm text-stone-500">
             Chưa có ảnh thumbnail cho miền này.
@@ -315,7 +324,7 @@ export function FavoriteDestinations() {
               return (
                 <div
                   key={province.id}
-                  className={`image-mansory__item ${metaVariant} ${tileSpanClass(idx)}`}
+                  className={`fav-dest-tile image-mansory__item ${metaVariant} ${tileSpanClass(idx)}`}
                 >
                   <Link
                     href={`/favorites/${province.id}`}
@@ -350,7 +359,7 @@ export function FavoriteDestinations() {
             })}
           </div>
         )}
-      </div>
+      </MotionInView>
     </section>
   );
 }

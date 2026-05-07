@@ -9,7 +9,10 @@ import {
   BookingListPaginatedResponseSchema,
   BookingResponseSchema,
   CreateBookingSchema,
+  PreviewPromoBodySchema,
+  PreviewPromoResponseSchema,
   TourBookingsGroupedResponseSchema,
+  RejectBookingCancellationSchema,
   UpdateBookingStatusSchema,
 } from '../schema/booking.schema'
 
@@ -35,6 +38,16 @@ export const bookingContract = c.router({
     }),
   },
 
+  /** Kiểm tra mã giảm giá trước khi đặt (không tạo booking) */
+  previewPromo: {
+    method: 'POST',
+    path: '/promo/preview',
+    body: PreviewPromoBodySchema,
+    responses: withExceptionResponse({
+      200: PreviewPromoResponseSchema,
+    }),
+  },
+
   createBooking: {
     method: 'POST',
     path: '/',
@@ -49,6 +62,27 @@ export const bookingContract = c.router({
     path: '/:id/cancel',
     pathParams: idParams,
     body: z.object({}),
+    responses: withExceptionResponse({
+      200: BookingResponseSchema,
+    }),
+  },
+
+  /** Admin: chấp nhận hủy (chỉ khi đơn đang chờ duyệt hủy và vẫn trong khung thời gian) */
+  approveBookingCancellation: {
+    method: 'POST',
+    path: '/:id/cancellation/approve',
+    pathParams: idParams,
+    body: z.object({}),
+    responses: withExceptionResponse({
+      200: BookingResponseSchema,
+    }),
+  },
+
+  rejectBookingCancellation: {
+    method: 'POST',
+    path: '/:id/cancellation/reject',
+    pathParams: idParams,
+    body: RejectBookingCancellationSchema,
     responses: withExceptionResponse({
       200: BookingResponseSchema,
     }),

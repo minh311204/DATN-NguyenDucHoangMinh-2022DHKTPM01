@@ -16,16 +16,411 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html {
+  scroll-behavior: smooth;
+  /* Tránh footer / nội dung full-width nhảy ngang khi một trang có scrollbar dọc (vd. Đăng ký) còn Đăng nhập thì không */
+  scrollbar-gutter: stable;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
-/* ===== Tour detail: hide site header when tab bar is active ===== */
-body.tour-detail-tabs-visible > header {
-  visibility: hidden;
+/* ===== Motion (Travela-style: hero drift, soft reveals, card hovers) ===== */
+@keyframes motion-hero-drift {
+  0% {
+    transform: scale(1) translate(0, 0);
+  }
+  50% {
+    transform: scale(1.07) translate(-1.25%, -0.6%);
+  }
+  100% {
+    transform: scale(1) translate(0, 0);
+  }
+}
+
+@keyframes motion-fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(1rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes motion-promo-tile-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.65rem) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.motion-hero-bg {
+  animation: motion-hero-drift 32s ease-in-out infinite;
+  will-change: transform;
+}
+
+.motion-fade-in-up {
+  animation: motion-fade-in-up 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.motion-section-reveal {
+  animation: motion-fade-in-up 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.motion-delay-1 {
+  animation-delay: 90ms;
+}
+.motion-delay-2 {
+  animation-delay: 180ms;
+}
+.motion-delay-3 {
+  animation-delay: 270ms;
+}
+.motion-delay-4 {
+  animation-delay: 360ms;
+}
+
+.motion-stagger-item {
+  animation: motion-fade-in-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.motion-stagger-item:nth-child(1) {
+  animation-delay: 40ms;
+}
+.motion-stagger-item:nth-child(2) {
+  animation-delay: 90ms;
+}
+.motion-stagger-item:nth-child(3) {
+  animation-delay: 140ms;
+}
+.motion-stagger-item:nth-child(4) {
+  animation-delay: 190ms;
+}
+.motion-stagger-item:nth-child(5) {
+  animation-delay: 240ms;
+}
+.motion-stagger-item:nth-child(6) {
+  animation-delay: 290ms;
+}
+.motion-stagger-item:nth-child(7) {
+  animation-delay: 340ms;
+}
+.motion-stagger-item:nth-child(8) {
+  animation-delay: 390ms;
+}
+
+.motion-promo-tile-enter {
+  animation: motion-promo-tile-enter 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.motion-promo-tile-enter:nth-child(1) {
+  animation-delay: 0ms;
+}
+.motion-promo-tile-enter:nth-child(2) {
+  animation-delay: 55ms;
+}
+.motion-promo-tile-enter:nth-child(3) {
+  animation-delay: 110ms;
+}
+
+/* Hero trang chủ: lộ dần tagline + search khi data-home-hero-revealed (cuộn xuống) */
+[data-home-hero-revealed="false"] .home-hero-stagger-1,
+[data-home-hero-revealed="false"] .home-hero-stagger-2,
+[data-home-hero-revealed="false"] .home-hero-stagger-3 {
+  opacity: 0;
+  transform: translateY(1.25rem);
   pointer-events: none;
+}
+
+.home-hero-stagger-1,
+.home-hero-stagger-2,
+.home-hero-stagger-3 {
+  transition:
+    opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+[data-home-hero-revealed="true"] .home-hero-stagger-1 {
+  transition-delay: 0.04s;
+}
+[data-home-hero-revealed="true"] .home-hero-stagger-2 {
+  transition-delay: 0.12s;
+}
+[data-home-hero-revealed="true"] .home-hero-stagger-3 {
+  transition-delay: 0.2s;
+}
+
+/* Trang chủ — icon quay quanh ảnh (home-about), icon giữ hướng ngang */
+@keyframes home-orbit-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes home-orbit-counter-rotate {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+.home-about-orbit-spin {
+  animation: home-orbit-rotate 24s linear infinite;
+  will-change: transform;
+}
+
+.home-about-orbit-icon {
+  animation: home-orbit-counter-rotate 24s linear infinite;
+  will-change: transform;
+}
+
+/* Trang chủ — vòng nét đứt xoay quanh icon feature (home-features) */
+@keyframes home-features-dashed-ring {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.home-features-dashed-ring {
+  animation: home-features-dashed-ring 20s linear infinite;
+  will-change: transform;
+}
+
+/* Lộ khi cuộn tới — dùng với @/components/motion-in-view (tương đương AOS fade-up/left/right) */
+.motion-in-view {
+  opacity: 0;
+  transition:
+    opacity 0.65s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.motion-in-view--from-up {
+  transform: translateY(1rem);
+}
+.motion-in-view--from-left {
+  transform: translateX(-1.1rem);
+}
+.motion-in-view--from-right {
+  transform: translateX(1.1rem);
+}
+
+.motion-in-view--visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) !important;
+}
+
+/* Grid tour: stagger theo thứ tự khi khối cha lộ */
+.tours-reveal-wrap:not(.motion-in-view--visible) .tours-stagger-item {
+  opacity: 0;
+  transform: translateY(0.65rem);
+}
+
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(1) {
+  transition-delay: 0.03s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(2) {
+  transition-delay: 0.08s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(3) {
+  transition-delay: 0.13s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(4) {
+  transition-delay: 0.18s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(5) {
+  transition-delay: 0.23s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(6) {
+  transition-delay: 0.28s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(7) {
+  transition-delay: 0.33s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(8) {
+  transition-delay: 0.38s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(9) {
+  transition-delay: 0.43s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(10) {
+  transition-delay: 0.48s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(11) {
+  transition-delay: 0.53s;
+}
+.tours-reveal-wrap.motion-in-view--visible .tours-stagger-item:nth-child(12) {
+  transition-delay: 0.58s;
+}
+
+/* Điểm đến — masonry tile khi khối lộ */
+.fav-dest-wrap:not(.motion-in-view--visible) .fav-dest-tile {
+  opacity: 0;
+  transform: translateY(0.5rem) scale(0.99);
+}
+
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(1) {
+  transition-delay: 0.02s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(2) {
+  transition-delay: 0.05s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(3) {
+  transition-delay: 0.08s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(4) {
+  transition-delay: 0.11s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(5) {
+  transition-delay: 0.14s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(6) {
+  transition-delay: 0.17s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(7) {
+  transition-delay: 0.2s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(8) {
+  transition-delay: 0.23s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(9) {
+  transition-delay: 0.26s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(10) {
+  transition-delay: 0.29s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(11) {
+  transition-delay: 0.32s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(12) {
+  transition-delay: 0.35s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(13) {
+  transition-delay: 0.38s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(14) {
+  transition-delay: 0.41s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(15) {
+  transition-delay: 0.44s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(16) {
+  transition-delay: 0.47s;
+}
+.fav-dest-wrap.motion-in-view--visible .fav-dest-tile:nth-child(n + 17) {
+  transition-delay: 0.5s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .motion-hero-bg {
+    animation: none !important;
+  }
+
+  .motion-in-view,
+  .motion-in-view--visible {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+
+  .tours-reveal-wrap:not(.motion-in-view--visible) .tours-stagger-item,
+  .fav-dest-wrap:not(.motion-in-view--visible) .fav-dest-tile {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+
+  [data-home-hero-revealed] .home-hero-stagger-1,
+  [data-home-hero-revealed] .home-hero-stagger-2,
+  [data-home-hero-revealed] .home-hero-stagger-3 {
+    opacity: 1 !important;
+    transform: none !important;
+    pointer-events: auto !important;
+    transition: none !important;
+  }
+
+  .motion-fade-in-up,
+  .motion-section-reveal,
+  .motion-stagger-item,
+  .motion-promo-tile-enter {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .checkout-pay-drawer-panel {
+    animation: none !important;
+  }
+
+  .home-about-orbit-spin,
+  .home-about-orbit-icon {
+    animation: none !important;
+  }
+
+  .home-features-dashed-ring {
+    animation: none !important;
+  }
+}
+
+/* Chip ngày khởi hành trên thẻ tour — hover/focus: nền đỏ tươi + chữ trắng */
+.tour-date-chip {
+  border: 1px solid #d92d20;
+  background-color: #ffffff;
+  color: #d92d20;
+  border-radius: 0.25rem;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.tour-date-chip:hover {
+  background-color: #d92d20;
+  color: #ffffff;
+  border-color: #d92d20;
+}
+
+.tour-date-chip:focus-visible {
+  background-color: #d92d20;
+  color: #ffffff;
+  border-color: #d92d20;
+  outline: none;
+}
+
+.tour-date-chip:active {
+  background-color: #d92d20;
+  color: #ffffff;
+  border-color: #d92d20;
+}
+
+.tour-date-chip--selected {
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #d92d20;
 }
 
 /* ===== Favorites masonry thumbnails ===== */
@@ -132,3 +527,28 @@ body.tour-detail-tabs-visible > header {
   pointer-events: auto;
 }
 
+/* Thông báo popup (socket) */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.5rem) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Trang checkout: panel phương thức thanh toán trượt từ phải */
+@keyframes checkout-pay-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.checkout-pay-drawer-panel {
+  animation: checkout-pay-drawer-in 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}

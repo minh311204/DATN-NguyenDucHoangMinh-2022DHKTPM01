@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Star, Trash2, PenLine } from "lucide-react";
 import { deleteMyTourReview } from "@/lib/client-tour-reviews";
 import { hasAccessToken, AUTH_KEYS } from "@/lib/auth-storage";
+import { ensureSessionFresh } from "@/lib/client-auth";
 import { errorMessage } from "@/lib/format";
 import { API_BASE_URL } from "@/lib/env";
 
@@ -87,17 +88,25 @@ export default function MyReviewsPage() {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
+    let alive = true;
     setMounted(true);
-    const isAuthed = hasAccessToken();
-    setAuthed(isAuthed);
-    if (isAuthed) {
-      void fetchMyReviews().then((data) => {
-        setReviews(data);
+    void (async () => {
+      await ensureSessionFresh();
+      if (!alive) return;
+      const isAuthed = hasAccessToken();
+      setAuthed(isAuthed);
+      if (!isAuthed) {
         setLoading(false);
-      });
-    } else {
+        return;
+      }
+      const data = await fetchMyReviews();
+      if (!alive) return;
+      setReviews(data);
       setLoading(false);
-    }
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   async function onDelete(tourId: number) {

@@ -9,11 +9,13 @@ if (existsSync(apiEnvPath)) {
 loadEnv();
 
 import { NestFactory } from '@nestjs/core';
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
 import { urlencoded } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.useWebSocketAdapter(new IoAdapter(app));
   app.use(urlencoded({ extended: true }));
   app.enableCors({
     origin: [

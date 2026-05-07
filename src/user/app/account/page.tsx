@@ -10,7 +10,13 @@ import {
   MessageSquareText,
   UserRound,
 } from "lucide-react";
-import { getStoredUserEmail, hasAccessToken, initialsFromEmail } from "@/lib/auth-storage";
+import {
+  AUTH_CHANGED_EVENT,
+  getStoredUserEmail,
+  hasAccessToken,
+  initialsFromEmail,
+} from "@/lib/auth-storage";
+import { ensureSessionFresh } from "@/lib/client-auth";
 
 function displayNameFromEmail(email: string | null): string {
   if (!email) return "Khách";
@@ -88,9 +94,30 @@ export default function AccountPage() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
   useEffect(() => {
+    let alive = true;
     setMounted(true);
-    setIsLoggedIn(hasAccessToken());
-    setUserEmail(getStoredUserEmail());
+    syncLocal();
+    void ensureSessionFresh().finally(() => {
+      if (!alive) return;
+      syncLocal();
+    });
+    return () => {
+      alive = false;
+    };
+
+    function syncLocal() {
+      setIsLoggedIn(hasAccessToken());
+      setUserEmail(getStoredUserEmail());
+    }
+  }, []);
+
+  useEffect(() => {
+    function onAuthChanged() {
+      setIsLoggedIn(hasAccessToken());
+      setUserEmail(getStoredUserEmail());
+    }
+    window.addEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
+    return () => window.removeEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
   }, []);
 
   const displayName = displayNameFromEmail(userEmail);
@@ -197,7 +224,7 @@ export default function AccountPage() {
         <section className="rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold text-stone-900">Thông tin cá nhân</h2>
           <p className="mt-1 text-sm text-stone-500">
-            Cập nhật thông tin của Quý khách và tìm hiểu các thông tin này được sử dụng ra sao
+            
           </p>
 
           <div className="mt-5 grid gap-6 lg:grid-cols-2">

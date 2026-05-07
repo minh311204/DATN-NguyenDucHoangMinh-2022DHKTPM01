@@ -88,12 +88,13 @@ export class TourService {
   // ---------- Tours (list & detail) ----------
 
   async getTours(query: TourListQuery) {
+    /** Mặc định chỉ tour đang mở — tránh lộ tour đã tắt khi client quên gửi `isActive` */
     const isActive =
       query.isActive === 'true'
         ? true
         : query.isActive === 'false'
           ? false
-          : undefined
+          : true
 
     let departureScheduleFilter: Prisma.TourWhereInput | undefined
     if (query.departureDate) {
@@ -115,12 +116,15 @@ export class TourService {
       ...(query.destinationLocationId != null
         ? { destinationLocationId: query.destinationLocationId }
         : {}),
-      ...(isActive !== undefined ? { isActive } : {}),
+      isActive,
       ...(query.q ? { name: { contains: query.q } } : {}),
       ...budgetWhere(query.budget),
       ...(query.tourLine ? { tourLine: query.tourLine } : {}),
       ...(query.transportType ? { transportType: query.transportType } : {}),
       ...(query.featured === 'true' ? { isFeatured: true } : {}),
+      ...(query.tagId != null
+        ? { tags: { some: { tagId: query.tagId } } }
+        : {}),
       ...(departureScheduleFilter ?? {}),
     }
 
@@ -130,7 +134,11 @@ export class TourService {
       schedules: {
         where: { status: { not: 'CANCELLED' as const } },
         orderBy: { startDate: 'asc' as const },
-        take: 5,
+      },
+      tags: {
+        select: {
+          tag: { select: { id: true, name: true, description: true } },
+        },
       },
     } satisfies Prisma.TourInclude
 
@@ -193,6 +201,9 @@ export class TourService {
       availableSeats: number | null
       bookedSeats: number | null
     }>
+    tags?: Array<{
+      tag: { id: number; name: string; description: string | null }
+    }>
   }) {
     return {
       id: t.id,
@@ -218,6 +229,12 @@ export class TourService {
       destinationLocation: t.destinationLocation
         ? { id: t.destinationLocation.id, name: t.destinationLocation.name }
         : undefined,
+      tags:
+        t.tags?.map((m) => ({
+          id: m.tag.id,
+          name: m.tag.name,
+          description: m.tag.description,
+        })) ?? undefined,
       schedules: t.schedules.map((s) => ({
         id: s.id,
         startDate: iso(s.startDate),
@@ -279,6 +296,7 @@ export class TourService {
       isActive: t.isActive,
       isFeatured: t.isFeatured ?? false,
       createdAtUtc: iso(t.createdAtUtc),
+      singleRoomSupplement: num(t.singleRoomSupplement),
       inclusions: t.inclusions,
       exclusions: t.exclusions,
       cancellationPolicy: t.cancellationPolicy,
@@ -342,6 +360,7 @@ export class TourService {
       tags: t.tags.map((m) => ({
         id: m.tag.id,
         name: m.tag.name,
+        description: m.tag.description ?? null,
       })),
       transports: t.transports.map((tr) => ({
         id: tr.id,
@@ -360,9 +379,17 @@ export class TourService {
     }
   }
 
-  async getTourById(id: number) {
+  /**
+   * Chi tiết tour.
+   * Khách (site User): chỉ `isActive === true`. ADMIN (JWT): có thể xem cả tour đã tắt.
+   */
+  async getTourById(id: number, opts?: { allowInactive?: boolean }) {
     const detail = await this.loadTourDetail(id)
     if (!detail) throw new NotFoundException('Tour not found')
+    const allowInactive = opts?.allowInactive === true
+    if (!allowInactive && detail.isActive !== true) {
+      throw new NotFoundException('Tour not found')
+    }
     return detail
   }
 
@@ -507,7 +534,7 @@ export class TourService {
       }
     })
 
-    return this.getTourById(id)
+    return this.getTourById(id, { allowInactive: true })
   }
 
   async deleteTour(id: number) {
@@ -518,7 +545,7 @@ export class TourService {
   }
 
   async setTourTags(tourId: number, tagIds: number[]) {
-    await this.getTourById(tourId)
+    await this.getTourById(tourId, { allowInactive: true })
     await this.tourTagService.assertTagsExist(tagIds)
 
     await this.prisma.$transaction(async (tx) => {
@@ -530,7 +557,7 @@ export class TourService {
       }
     })
 
-    return this.getTourById(tourId)
+    return this.getTourById(tourId, { allowInactive: true })
   }
 
   // ---------- Schedules ----------
@@ -546,7 +573,7 @@ export class TourService {
       status?: string
     },
   ) {
-    await this.getTourById(tourId)
+    await this.getTourById(tourId, { allowInactive: true })
     const startDate = new Date(body.startDate)
     const endDate = new Date(body.endDate)
     validateSchedulePayload(
@@ -646,7 +673,7 @@ export class TourService {
     tourId: number,
     body: { dayNumber: number; title?: string; description?: string },
   ) {
-    await this.getTourById(tourId)
+    await this.getTourById(tourId, { allowInactive: true })
     const it = await this.prisma.tourItinerary.create({
       data: {
         tourId,
@@ -727,7 +754,7 @@ export class TourService {
   }
 
   async addTransport(tourId: number, body: CreateTourTransportInput) {
-    await this.getTourById(tourId)
+    await this.getTourById(tourId, { allowInactive: true })
     const tr = await this.prisma.tourTransport.create({
       data: {
         tourId,
