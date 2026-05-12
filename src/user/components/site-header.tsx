@@ -241,19 +241,29 @@ export function SiteHeader() {
 
         <nav
           aria-label="Điều hướng chính"
+          aria-busy={!mounted}
           className="hidden min-w-0 flex-1 justify-center md:flex"
         >
           <div className="flex items-center gap-0.5 rounded-full bg-[#1f2421] p-1.5 shadow-lg shadow-black/25 ring-1 ring-black/30 md:gap-1">
-            {MAIN_NAV.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                aria-current={mainNavActive(pathname, item.href) ? "page" : undefined}
-                className={mainNavClass(item.href)}
+            {mounted ? (
+              MAIN_NAV.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  aria-current={mainNavActive(pathname, item.href) ? "page" : undefined}
+                  className={mainNavClass(item.href)}
+                >
+                  {item.label}
+                </Link>
+              ))
+            ) : (
+              <div
+                className="flex min-h-[2.75rem] min-w-[14rem] flex-1 items-center justify-center px-2 md:min-w-[22rem]"
+                aria-hidden
               >
-                {item.label}
-              </Link>
-            ))}
+                <span className="h-2.5 w-24 animate-pulse rounded-full bg-white/15 md:w-36" />
+              </div>
+            )}
           </div>
         </nav>
 

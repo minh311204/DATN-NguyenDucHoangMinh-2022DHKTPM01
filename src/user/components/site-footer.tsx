@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import {
   ArrowRight,
   ChevronUp,
@@ -122,30 +122,47 @@ function FooterNewsletterBlock() {
   );
 }
 
+/** Đủ chỗ skeleton — không phụ thuộc độ dài mảng links (tránh lệch hydrate khi cache SSR/client khác phiên bản). */
+const FOOTER_COLUMN_LINK_PLACEHOLDERS = 6;
+const FOOTER_BOTTOM_NAV_PLACEHOLDERS = 5;
+
 function FooterLinkColumn({
   title,
   links,
   delayMs,
+  linksReady,
 }: {
   title: string;
   links: { href: string; label: string }[];
   delayMs?: number;
+  linksReady: boolean;
 }) {
   return (
     <MotionInView axis="up" delayMs={delayMs ?? 0} rootMargin="0px 0px -8% 0px">
       <div>
         <h5 className="text-base font-semibold text-white">{title}</h5>
-        <ul className="mt-5 space-y-3 text-[15px]">
-          {links.map((l) => (
-            <li key={l.href + l.label}>
-              <Link
-                href={l.href}
-                className="text-white/70 transition hover:text-white hover:underline"
-              >
-                {l.label}
-              </Link>
-            </li>
-          ))}
+        <ul
+          className="mt-5 space-y-3 text-[15px]"
+          aria-busy={!linksReady}
+        >
+          {!linksReady ? (
+            Array.from({ length: FOOTER_COLUMN_LINK_PLACEHOLDERS }, (_, i) => (
+              <li key={`link-ph-${i}`} aria-hidden>
+                <span className="block h-[1.125rem] max-w-[12rem] rounded bg-white/10" />
+              </li>
+            ))
+          ) : (
+            links.map((l) => (
+              <li key={l.href + l.label}>
+                <Link
+                  href={l.href}
+                  className="text-white/70 transition hover:text-white hover:underline"
+                >
+                  {l.label}
+                </Link>
+              </li>
+            ))
+          )}
         </ul>
       </div>
     </MotionInView>
@@ -172,6 +189,12 @@ function FooterScrollTopEmbedded() {
 
 /** Footer trang công khai — bố cục theo Travela `footer_home.blade.php` */
 export function SiteFooter() {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const year = new Date().getFullYear();
 
   return (
@@ -247,10 +270,30 @@ export function SiteFooter() {
       <div className="border-t border-white/10">
         <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-16">
           <div className="grid grid-cols-2 gap-x-6 gap-y-10 md:grid-cols-3 lg:grid-cols-5">
-            <FooterLinkColumn title="Dịch vụ" links={SERVICE_LINKS} delayMs={0} />
-            <FooterLinkColumn title="Công ty" links={COMPANY_LINKS} delayMs={50} />
-            <FooterLinkColumn title="Điểm đến" links={DESTINATION_LINKS} delayMs={100} />
-            <FooterLinkColumn title="Thể loại" links={CATEGORY_LINKS} delayMs={150} />
+            <FooterLinkColumn
+              title="Dịch vụ"
+              links={SERVICE_LINKS}
+              delayMs={0}
+              linksReady={mounted}
+            />
+            <FooterLinkColumn
+              title="Công ty"
+              links={COMPANY_LINKS}
+              delayMs={50}
+              linksReady={mounted}
+            />
+            <FooterLinkColumn
+              title="Điểm đến"
+              links={DESTINATION_LINKS}
+              delayMs={100}
+              linksReady={mounted}
+            />
+            <FooterLinkColumn
+              title="Thể loại"
+              links={CATEGORY_LINKS}
+              delayMs={150}
+              linksReady={mounted}
+            />
             <MotionInView
               className="col-span-2 md:col-span-3 lg:col-span-1"
               axis="up"
@@ -296,24 +339,35 @@ export function SiteFooter() {
         </div>
         <div className="mx-auto max-w-6xl px-4 sm:px-6">
           <div className="flex flex-col items-center gap-6 sm:flex-row sm:justify-between sm:gap-4">
-            <p className="text-center text-sm text-white/60 sm:text-start">
+            <p className="text-center text-sm text-white/60 sm:text-start" suppressHydrationWarning>
               © {year}{" "}
               <Link href="/" className="text-white/85 hover:text-white hover:underline">
                 TourBooking
               </Link>
               , All rights reserved
             </p>
-            <ul className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm sm:justify-end">
-              {BOTTOM_NAV.map((item) => (
-                <li key={item.label}>
-                  <Link
-                    href={item.href}
-                    className="text-white/65 transition hover:text-white hover:underline"
-                  >
-                    {item.label}
-                  </Link>
-                </li>
-              ))}
+            <ul
+              className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm sm:justify-end"
+              aria-busy={!mounted}
+            >
+              {!mounted ? (
+                Array.from({ length: FOOTER_BOTTOM_NAV_PLACEHOLDERS }, (_, i) => (
+                  <li key={`bottom-ph-${i}`} aria-hidden>
+                    <span className="inline-block h-4 w-16 rounded bg-white/10 sm:w-20" />
+                  </li>
+                ))
+              ) : (
+                BOTTOM_NAV.map((item) => (
+                  <li key={item.label}>
+                    <Link
+                      href={item.href}
+                      className="text-white/65 transition hover:text-white hover:underline"
+                    >
+                      {item.label}
+                    </Link>
+                  </li>
+                ))
+              )}
             </ul>
           </div>
         </div>

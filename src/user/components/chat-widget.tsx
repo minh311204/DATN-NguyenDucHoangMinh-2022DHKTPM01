@@ -6,19 +6,38 @@ import { MessageCircle, Send, X } from "lucide-react";
 import type { TourListItem } from "@/lib/api-types";
 import { postAiMessage } from "@/lib/client-ai";
 import { formatVnd } from "@/lib/format";
-import { AUTH_CHANGED_EVENT } from "@/lib/auth-storage";
+import { stripChatMarkdown } from "@/lib/strip-chat-markdown";
+import {
+  AUTH_CHANGED_EVENT,
+  getStoredUserEmail,
+  hasAccessToken,
+} from "@/lib/auth-storage";
 
 type ChatRole = "user" | "assistant";
 type ChatItem =
   | { type: "message"; role: ChatRole; content: string }
   | { type: "tours"; tours: TourListItem[] };
 
-const STORAGE_KEYS = {
+/** Mở/đóng panel chat — không gắn user (thiết bị). */
+const KEY_MINIMIZED = "aiChat.minimized";
+
+/** Flat keys cũ (trước khi nhánh theo user) — migrate một lần khi có user + bucket trống. */
+const LEGACY = {
   sessionId: "aiChat.sessionId",
   sessionKey: "aiChat.sessionKey",
-  minimized: "aiChat.minimized",
   messages: "aiChat.messages",
 } as const;
+
+function userScopedPrefix(emailNorm: string): string {
+  return `aiChat:user:${encodeURIComponent(emailNorm)}:`;
+}
+
+/** Prefix localStorage phiên AI cho user đang đăng nhập; null khi khách hoặc chưa có email trong storage. */
+function getPersistedAiPrefix(): string | null {
+  if (!hasAccessToken()) return null;
+  const raw = getStoredUserEmail()?.trim().toLowerCase();
+  return raw ? userScopedPrefix(raw) : null;
+}
 
 const WELCOME: ChatItem = {
   type: "message",
@@ -36,12 +55,56 @@ function safeJson<T>(raw: string | null, fallback: T): T {
   }
 }
 
-function readStoredNumber(key: string): number | undefined {
+function readStoredNumberForFullKey(fullKey: string): number | undefined {
   if (typeof window === "undefined") return undefined;
-  const v = localStorage.getItem(key);
+  const v = localStorage.getItem(fullKey);
   if (!v) return undefined;
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function migrateLegacyToUserScoped(prefix: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const already = localStorage.getItem(`${prefix}messages`);
+    if (already != null && already !== "") return;
+
+    const legacyMsgs = safeJson<ChatItem[]>(
+      localStorage.getItem(LEGACY.messages),
+      [],
+    );
+    if (!Array.isArray(legacyMsgs) || legacyMsgs.length === 0) return;
+
+    localStorage.setItem(`${prefix}messages`, JSON.stringify(legacyMsgs.slice(-60)));
+    const lsId = localStorage.getItem(LEGACY.sessionId);
+    if (lsId) localStorage.setItem(`${prefix}sessionId`, lsId);
+    const lsKey = localStorage.getItem(LEGACY.sessionKey);
+    if (lsKey) localStorage.setItem(`${prefix}sessionKey`, lsKey);
+
+    localStorage.removeItem(LEGACY.messages);
+    localStorage.removeItem(LEGACY.sessionId);
+    localStorage.removeItem(LEGACY.sessionKey);
+  } catch {
+    // ignore
+  }
+}
+
+/** Đọc state chat đã lưu theo người dùng; `prefix` có sẵn (đã có token + email). */
+function readPersistedUserChat(prefix: string): {
+  messages: ChatItem[];
+  sessionId: number | undefined;
+  sessionKey: string | undefined;
+} {
+  migrateLegacyToUserScoped(prefix);
+  const stored = safeJson<ChatItem[]>(
+    localStorage.getItem(`${prefix}messages`),
+    [],
+  );
+  const messages = stored.length > 0 ? stored : [WELCOME];
+  const sessionId = readStoredNumberForFullKey(`${prefix}sessionId`);
+  const sessionKey =
+    localStorage.getItem(`${prefix}sessionKey`) ?? undefined;
+  return { messages, sessionId, sessionKey };
 }
 
 export function ChatWidget() {
@@ -56,32 +119,50 @@ export function ChatWidget() {
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Restore state from localStorage on mount
+  // Restore state: user đã đăng nhập → localStorage theo email; khách → chỉ WELCOME (không đọc LS session/messages)
   useEffect(() => {
     try {
-      const storedMin = localStorage.getItem(STORAGE_KEYS.minimized);
+      const storedMin = localStorage.getItem(KEY_MINIMIZED);
       if (storedMin === "false") setOpen(true);
 
-      setSessionId(readStoredNumber(STORAGE_KEYS.sessionId));
-      const sk = localStorage.getItem(STORAGE_KEYS.sessionKey) ?? undefined;
-      setSessionKey(sk || undefined);
-
-      const stored = safeJson<ChatItem[]>(localStorage.getItem(STORAGE_KEYS.messages), []);
-      setItems(stored.length > 0 ? stored : [WELCOME]);
+      const prefix = getPersistedAiPrefix();
+      if (prefix) {
+        const { messages, sessionId: sid, sessionKey: sk } =
+          readPersistedUserChat(prefix);
+        setItems(messages);
+        setSessionId(sid);
+        setSessionKey(sk);
+      } else {
+        setItems([WELCOME]);
+        setSessionId(undefined);
+        setSessionKey(undefined);
+      }
     } catch {
       // ignore
     }
   }, []);
 
-  // Listen for login/logout to reset chat
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const handleAuth = () => {
-      resetChat();
-    };
-    window.addEventListener(AUTH_CHANGED_EVENT, handleAuth);
-    return () => window.removeEventListener(AUTH_CHANGED_EVENT, handleAuth);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    function onAuthChanged() {
+      try {
+        const prefix = getPersistedAiPrefix();
+        if (prefix) {
+          const { messages, sessionId: sid, sessionKey: sk } =
+            readPersistedUserChat(prefix);
+          setItems(messages);
+          setSessionId(sid);
+          setSessionKey(sk);
+        } else {
+          setItems([WELCOME]);
+          setSessionId(undefined);
+          setSessionKey(undefined);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    window.addEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
+    return () => window.removeEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
   }, []);
 
   // Scroll to bottom whenever messages change or panel opens
@@ -97,12 +178,25 @@ export function ChatWidget() {
   const canSend = useMemo(() => draft.trim().length > 0 && !busy, [draft, busy]);
 
   function persistMessages(next: ChatItem[]) {
+    const prefix = getPersistedAiPrefix();
+    if (!prefix) return;
     try {
-      // Keep last 60 items to avoid localStorage bloat
       const trimmed = next.slice(-60);
-      localStorage.setItem(STORAGE_KEYS.messages, JSON.stringify(trimmed));
+      localStorage.setItem(`${prefix}messages`, JSON.stringify(trimmed));
     } catch {
       // ignore quota errors
+    }
+  }
+
+  function persistAiSession(pid: number, pkey?: string | null) {
+    const prefix = getPersistedAiPrefix();
+    if (!prefix) return;
+    try {
+      localStorage.setItem(`${prefix}sessionId`, String(pid));
+      if (pkey?.trim()) localStorage.setItem(`${prefix}sessionKey`, pkey.trim());
+      else localStorage.removeItem(`${prefix}sessionKey`);
+    } catch {
+      // ignore
     }
   }
 
@@ -123,7 +217,20 @@ export function ChatWidget() {
     // Show typing indicator
     setTyping(true);
 
-    const res = await postAiMessage({ sessionId, sessionKey, message: msg });
+    const loggedIn = hasAccessToken();
+    /** Khách (không JWT) chỉ được resume phiên có sessionKey — phiên chỉ của user chỉ được dùng lại sau khi đăng nhập lại */
+    const validGuestResume =
+      !loggedIn &&
+      typeof sessionId === "number" &&
+      Boolean(sessionKey?.trim());
+
+    const res = await postAiMessage({
+      sessionId:
+        loggedIn || validGuestResume ? sessionId : undefined,
+      sessionKey:
+        loggedIn ? sessionKey : validGuestResume ? sessionKey : undefined,
+      message: msg,
+    });
 
     setTyping(false);
 
@@ -146,13 +253,7 @@ export function ChatWidget() {
     const nextSessionKey = res.data.sessionKey;
     setSessionId(nextSessionId);
     setSessionKey(nextSessionKey);
-    try {
-      localStorage.setItem(STORAGE_KEYS.sessionId, String(nextSessionId));
-      if (nextSessionKey) localStorage.setItem(STORAGE_KEYS.sessionKey, nextSessionKey);
-    } catch {
-      // ignore
-    }
-
+    persistAiSession(nextSessionId, nextSessionKey);
     setItems((prev) => {
       const next: ChatItem[] = [
         ...prev,
@@ -172,7 +273,7 @@ export function ChatWidget() {
     setOpen((v) => {
       const next = !v;
       try {
-        localStorage.setItem(STORAGE_KEYS.minimized, String(!next));
+        localStorage.setItem(KEY_MINIMIZED, String(!next));
       } catch {
         // ignore
       }
@@ -182,9 +283,12 @@ export function ChatWidget() {
 
   function resetChat() {
     try {
-      localStorage.removeItem(STORAGE_KEYS.sessionId);
-      localStorage.removeItem(STORAGE_KEYS.sessionKey);
-      localStorage.removeItem(STORAGE_KEYS.messages);
+      const prefix = getPersistedAiPrefix();
+      if (prefix) {
+        localStorage.removeItem(`${prefix}messages`);
+        localStorage.removeItem(`${prefix}sessionId`);
+        localStorage.removeItem(`${prefix}sessionKey`);
+      }
     } catch {
       // ignore
     }
@@ -242,6 +346,8 @@ export function ChatWidget() {
               }
 
               const mine = it.role === "user";
+              const text =
+                mine ? it.content : stripChatMarkdown(it.content);
               return (
                 <div key={`m-${idx}`} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                   <div
@@ -250,7 +356,7 @@ export function ChatWidget() {
                       mine ? "bg-sky-600 text-white" : "bg-stone-100 text-stone-900",
                     ].join(" ")}
                   >
-                    {it.content}
+                    {text}
                   </div>
                 </div>
               );
