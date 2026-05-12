@@ -35,19 +35,27 @@ import type {
 import { formatVnd, errorMessage } from '@/lib/format';
 import {
   AUTH_CHANGED_EVENT,
+  AUTH_KEYS,
   getStoredUserEmail,
   hasAccessToken,
 } from '@/lib/auth-storage';
-import { ensureSessionFresh } from '@/lib/client-auth';
+import { ensureSessionFresh, getMe } from '@/lib/client-auth';
 import {
   createBooking,
   createVnpayPayment,
+  getMyBookings,
   previewPromo,
+  type BookingListItem,
   type CreateBookingInput,
 } from '@/lib/client-booking';
+import { schedulesOverlapUtc } from '@/lib/booking-schedule-overlap';
 import { PassengerDobPicker } from '@/components/booking/passenger-dob-picker';
 import { BookingFlowStepper } from '@/components/booking/booking-flow-stepper';
 import { PaymentMethodDrawer } from '@/components/booking/payment-method-drawer';
+import {
+  ageBandTooltipLines,
+  validateDobForCategory,
+} from '@/lib/booking-passenger-age';
 
 /* ══════════════════════════════════════════════
    HELPERS
@@ -55,10 +63,12 @@ import { PaymentMethodDrawer } from '@/components/booking/payment-method-drawer'
 type PassengerForm = {
   fullName: string;
   dateOfBirth: string;
-  /** Người lớn: bắt buộc khi hoàn tất bước 1 */
+  /** Mọi nhóm tuổi — bắt buộc khi hoàn tất bước 1 */
   gender: string;
   /** Người lớn — phòng đơn */
   wantsSingleRoom?: boolean;
+  /** Chỉ giao diện / lưu form — API booking hiện chưa có trường */
+  phone?: string;
 };
 
 type FullSchedule = {
@@ -82,6 +92,36 @@ function utcYmd(d: Date) {
 function utcMonthKey(d: Date) {
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}`;
 }
+
+/** Khớp API `createBooking`: chỉ lịch chưa qua thời điểm khởi hành */
+function isScheduleBookable(isoStart: string) {
+  return new Date(isoStart).getTime() >= Date.now();
+}
+
+function remainingSeatsForSchedule(dep: FullSchedule): number | null {
+  if (dep.availableSeats == null) return null;
+  return Math.max(dep.availableSeats - (dep.bookedSeats ?? 0), 0);
+}
+
+function isScheduleSoldOut(dep: FullSchedule): boolean {
+  const rem = remainingSeatsForSchedule(dep);
+  return rem != null && rem <= 0;
+}
+
+function firstScheduleWithSeats(schedules: FullSchedule[]) {
+  return schedules.find((s) => !isScheduleSoldOut(s)) ?? null;
+}
+
+/** Booking của user đang chiếm khung ngày trên lịch (PENDING còn hạn / CONFIRMED). */
+function myBookingBlocksOverlap(b: BookingListItem, nowMs: number): boolean {
+  if (b.status === 'CANCELLED' || b.status === 'COMPLETED') return false;
+  if (b.status === 'CONFIRMED') return true;
+  if (b.status === 'PENDING') {
+    if (b.expiredAtUtc == null || b.expiredAtUtc === '') return true;
+    return new Date(b.expiredAtUtc).getTime() > nowMs;
+  }
+  return false;
+}
 function formatVnDate(d: Date) {
   return `${pad2(d.getUTCDate())}/${pad2(d.getUTCMonth() + 1)}/${d.getUTCFullYear()}`;
 }
@@ -96,6 +136,55 @@ function formatVnDobYmd(ymd: string) {
 function monthLabel(ym: string) {
   const [y, m] = ym.split('-');
   return `Tháng ${Number(m)}/${y}`;
+}
+
+function PassengerAgeHint({
+  departure,
+  band,
+}: {
+  departure: Date | null;
+  band: 'ADULT' | 'CHILD' | 'INFANT';
+}) {
+  const label =
+    band === 'ADULT'
+      ? 'Gợi ý ngày sinh nhóm người lớn'
+      : band === 'CHILD'
+        ? 'Gợi ý ngày sinh nhóm trẻ em'
+        : 'Gợi ý ngày sinh nhóm trẻ nhỏ';
+  const lines = departure ? ageBandTooltipLines(departure, band) : [];
+
+  if (!departure) {
+    return (
+      <span
+        className="inline-flex shrink-0 text-stone-300"
+        title="Chọn lịch khởi hành để xem gợi ý khoảng ngày sinh"
+      >
+        <Info className="h-3.5 w-3.5" aria-hidden />
+      </span>
+    );
+  }
+
+  return (
+    <span className="group relative inline-flex shrink-0 align-middle">
+      <button
+        type="button"
+        className="rounded-full p-0.5 text-sky-600 outline-none ring-offset-2 hover:bg-sky-100 focus-visible:ring-2 focus-visible:ring-sky-400"
+        aria-label={label}
+      >
+        <Info className="h-3.5 w-3.5" aria-hidden />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none invisible absolute bottom-[calc(100%+6px)] left-1/2 z-30 w-max max-w-[min(18rem,calc(100vw-2rem))] -translate-x-1/2 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-2 text-left text-[11px] font-medium leading-snug text-[#0b5ea8] opacity-0 shadow-md transition group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+      >
+        {lines.map((line) => (
+          <span key={`${band}-${line}`} className="block">
+            {line}
+          </span>
+        ))}
+      </span>
+    </span>
+  );
 }
 
 function vehicleLabel(v: string) {
@@ -130,11 +219,11 @@ function VehicleIcon({ type }: { type: string }) {
 }
 
 /* ══════════════════════════════════════════════
-   STEP INDICATOR (căn giữa — theo mẫu ĐẶT TOUR)
+   STEP INDICATOR (căn giữa — trang đặt tour)
 ══════════════════════════════════════════════ */
 /** Bước hiển thị trên stepper: 1 = nhập thông tin, 2 = thanh toán, 3 = hoàn tất (trang đặt chỉ tới bước 2) */
 const STEP_SUBLINE: Record<1 | 2, string> = {
-  1: 'Điền thông tin liên hệ và hành khách, kiểm tra tóm tắt chuyến đi',
+  1: 'Hãy đảm bảo tất cả thông tin chi tiết trên trang này đã chính xác trước khi tiến hành thanh toán.',
   2: 'Kiểm tra lại và xác nhận thanh toán',
 };
 
@@ -473,153 +562,446 @@ function ItinerarySection({ itineraries }: { itineraries: TourItinerary[] }) {
   );
 }
 
-/* ══════════════════════════════════════════════
-   PASSENGER ROW
-══════════════════════════════════════════════ */
-function PassengerRow({
-  label,
-  colorClass,
-  index,
-  value,
-  onChange,
-}: {
-  label: string;
-  colorClass: string;
-  index: number;
-  value: PassengerForm;
-  onChange: (v: PassengerForm) => void;
-}) {
-  return (
-    <div className="rounded-xl border border-stone-200 bg-white p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <span
-          className={`rounded-md px-2 py-0.5 text-[11px] font-bold uppercase ${colorClass}`}
-        >
-          {label} #{index + 1}
-        </span>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div>
-          <label className="mb-1 block text-xs font-medium text-stone-600">
-            Họ tên *
-          </label>
-          <input
-            type="text"
-            value={value.fullName}
-            onChange={(e) => onChange({ ...value, fullName: e.target.value })}
-            placeholder="Như trên CCCD / hộ chiếu"
-            className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
-          />
-        </div>
-        <div>
-          <label
-            htmlFor={`dob-${label}-${index}`}
-            className="mb-1 block text-xs font-medium text-stone-600"
-          >
-            Ngày sinh *
-          </label>
-          <PassengerDobPicker
-            id={`dob-${label}-${index}`}
-            value={value.dateOfBirth}
-            onChange={(dateOfBirth) => onChange({ ...value, dateOfBirth })}
-          />
-        </div>
-      </div>
-    </div>
-  );
+type PassengerDraftBundle = {
+  adultP: PassengerForm[];
+  childP: PassengerForm[];
+  infantP: PassengerForm[];
+};
+
+function shallowClonePassengerLists(
+  adultP: PassengerForm[],
+  childP: PassengerForm[],
+  infantP: PassengerForm[],
+): PassengerDraftBundle {
+  return {
+    adultP: adultP.map((p) => ({ ...p })),
+    childP: childP.map((p) => ({ ...p })),
+    infantP: infantP.map((p) => ({ ...p })),
+  };
 }
 
-/** Khối người lớn — theo layout Vietravel: giới tính, họ tên, ngày sinh, phòng đơn */
-function AdultPassengerBlock({
-  index,
-  value,
-  onChange,
+/** Modal nhập đầy đủ hành khách (mẫu ảnh 2) */
+function PassengerDetailsModal({
+  draft,
+  setDraft,
+  departureDate,
   singleRoomPrice,
+  error,
+  onClose,
+  onConfirm,
+  onReset,
 }: {
-  index: number;
-  value: PassengerForm;
-  onChange: (v: PassengerForm) => void;
+  draft: PassengerDraftBundle;
+  setDraft: React.Dispatch<React.SetStateAction<PassengerDraftBundle>>;
+  departureDate: Date | null;
   singleRoomPrice: number | null;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+  onReset: () => void;
 }) {
-  const wants = value.wantsSingleRoom ?? false;
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  const showSingle = singleRoomPrice != null && singleRoomPrice > 0;
+
   return (
-    <div className="rounded-xl border border-stone-200 bg-white p-4">
-      <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-[#0b5ea8]">
-        Người lớn #{index + 1}
-      </p>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div>
-          <label className="mb-1 block text-xs font-medium text-stone-600">
-            Họ tên *
-          </label>
-          <input
-            type="text"
-            value={value.fullName}
-            onChange={(e) => onChange({ ...value, fullName: e.target.value })}
-            placeholder="Như trên CCCD / hộ chiếu"
-            className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-stone-600">
-            Giới tính *
-          </label>
-          <select
-            value={value.gender}
-            onChange={(e) => onChange({ ...value, gender: e.target.value })}
-            className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="passenger-modal-title"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="flex max-h-[min(90vh,820px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-stone-200/80 sm:max-w-xl">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-stone-100 px-5 py-4">
+          <h2
+            id="passenger-modal-title"
+            className="text-lg font-bold text-stone-900"
           >
-            <option value="">Chọn</option>
-            <option value="Nam">Nam</option>
-            <option value="Nữ">Nữ</option>
-            <option value="Khác">Khác</option>
-          </select>
-        </div>
-        <div className="sm:col-span-1">
-          <label
-            htmlFor={`dob-adult-${index}`}
-            className="mb-1 block text-xs font-medium text-stone-600"
+            Thông tin hành khách
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+            aria-label="Đóng"
           >
-            Ngày sinh *
-          </label>
-          <PassengerDobPicker
-            id={`dob-adult-${index}`}
-            value={value.dateOfBirth}
-            onChange={(dateOfBirth) => onChange({ ...value, dateOfBirth })}
-          />
+            <X className="h-5 w-5" />
+          </button>
         </div>
-        {singleRoomPrice != null && singleRoomPrice > 0 ? (
-          <div className="flex flex-col justify-end sm:col-span-1">
-            <span className="mb-1 text-xs font-medium text-stone-600">
-              Phòng đơn
-            </span>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
-              <span className="text-xs text-stone-600">
-                Phụ thu{' '}
-                <span className="font-semibold text-red-600">
-                  {formatVnd(singleRoomPrice)}
-                </span>
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={wants}
-                onClick={() => onChange({ ...value, wantsSingleRoom: !wants })}
-                className={[
-                  'relative h-7 w-12 shrink-0 rounded-full transition-colors',
-                  wants ? 'bg-[#0b5ea8]' : 'bg-stone-300',
-                ].join(' ')}
-              >
-                <span
-                  className={[
-                    'absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform',
-                    wants ? 'left-6' : 'left-0.5',
-                  ].join(' ')}
-                />
-              </button>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {showSingle ? (
+            <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-xs leading-relaxed text-[#0b5ea8]">
+              Phòng đơn áp dụng cho khách trong nhóm người lớn (sinh trước
+              18/05/2014); giá phòng đơn là:{' '}
+              <strong>{formatVnd(singleRoomPrice!)} / phòng</strong>
             </div>
+          ) : null}
+
+          {error ? (
+            <p className="mb-3 text-sm font-medium text-red-600">{error}</p>
+          ) : null}
+
+          <div className="space-y-8">
+            {draft.adultP.map((p, i) => {
+              const hint =
+                departureDate != null
+                  ? ageBandTooltipLines(departureDate, 'ADULT').join(' ')
+                  : '';
+              const wants = p.wantsSingleRoom ?? false;
+              return (
+                <div
+                  key={`m-a-${i}`}
+                  className="rounded-xl border border-stone-200 bg-stone-50/40 p-4"
+                >
+                  <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-dashed border-stone-200 pb-3">
+                    <Users className="h-4 w-4 shrink-0 text-[#0b5ea8]" />
+                    <span className="text-sm font-bold text-[#0b5ea8]">
+                      Người lớn
+                      {hint ? (
+                        <span className="font-normal"> ({hint})</span>
+                      ) : null}
+                    </span>
+                    {departureDate ? (
+                      <PassengerAgeHint departure={departureDate} band="ADULT" />
+                    ) : null}
+                  </div>
+                  <p className="mb-3 text-xs font-semibold text-stone-500">
+                    #{i + 1}
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Họ tên (*)
+                      </label>
+                      <input
+                        type="text"
+                        value={p.fullName}
+                        onChange={(e) =>
+                          setDraft((d) => ({
+                            ...d,
+                            adultP: d.adultP.map((x, j) =>
+                              j === i
+                                ? { ...x, fullName: e.target.value }
+                                : x,
+                            ),
+                          }))
+                        }
+                        placeholder="Ví dụ: Nguyễn Văn A"
+                        className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Ngày sinh (*)
+                      </label>
+                      <PassengerDobPicker
+                        value={p.dateOfBirth}
+                        onChange={(dateOfBirth) =>
+                          setDraft((d) => ({
+                            ...d,
+                            adultP: d.adultP.map((x, j) =>
+                              j === i ? { ...x, dateOfBirth } : x,
+                            ),
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Giới tính (*)
+                      </label>
+                      <select
+                        value={p.gender}
+                        onChange={(e) =>
+                          setDraft((d) => ({
+                            ...d,
+                            adultP: d.adultP.map((x, j) =>
+                              j === i ? { ...x, gender: e.target.value } : x,
+                            ),
+                          }))
+                        }
+                        className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
+                      >
+                        <option value="">Chọn</option>
+                        <option value="Nam">Nam</option>
+                        <option value="Nữ">Nữ</option>
+                        <option value="Khác">Khác</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-3 sm:col-span-2 sm:flex-row sm:items-end">
+                      <div className="min-w-0 flex-1">
+                        <label className="mb-1 block text-xs font-medium text-stone-600">
+                          Số điện thoại
+                        </label>
+                        <input
+                          type="tel"
+                          value={p.phone ?? ''}
+                          onChange={(e) =>
+                            setDraft((d) => ({
+                              ...d,
+                              adultP: d.adultP.map((x, j) =>
+                                j === i
+                                  ? { ...x, phone: e.target.value }
+                                  : x,
+                              ),
+                            }))
+                          }
+                          placeholder="Ví dụ: 0901234567 / +84901234567"
+                          className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
+                        />
+                      </div>
+                      {showSingle ? (
+                        <div className="flex shrink-0 items-center gap-3 rounded-lg border border-stone-200 bg-white px-3 py-2 sm:min-w-[220px]">
+                          <span className="text-xs font-medium text-stone-600">
+                            Phòng đơn
+                          </span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={wants}
+                            onClick={() => {
+                              setDraft((d) => ({
+                                ...d,
+                                adultP: d.adultP.map((x, j) =>
+                                  j === i
+                                    ? {
+                                        ...x,
+                                        wantsSingleRoom: !(
+                                          x.wantsSingleRoom ?? false
+                                        ),
+                                      }
+                                    : x,
+                                ),
+                              }));
+                            }}
+                            className={[
+                              'relative ml-auto h-7 w-12 shrink-0 rounded-full transition-colors',
+                              wants ? 'bg-[#0b5ea8]' : 'bg-stone-300',
+                            ].join(' ')}
+                          >
+                            <span
+                              className={[
+                                'absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform',
+                                wants ? 'left-6' : 'left-0.5',
+                              ].join(' ')}
+                            />
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {draft.childP.map((p, i) => {
+              const hint =
+                departureDate != null
+                  ? ageBandTooltipLines(departureDate, 'CHILD').join(' ')
+                  : '';
+              return (
+                <div
+                  key={`m-c-${i}`}
+                  className="rounded-xl border border-stone-200 bg-stone-50/40 p-4"
+                >
+                  <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-dashed border-stone-200 pb-3">
+                    <Users className="h-4 w-4 shrink-0 text-[#0b5ea8]" />
+                    <span className="text-sm font-bold text-[#0b5ea8]">
+                      Trẻ em
+                      {hint ? (
+                        <span className="font-normal"> ({hint})</span>
+                      ) : null}
+                    </span>
+                    {departureDate ? (
+                      <PassengerAgeHint departure={departureDate} band="CHILD" />
+                    ) : null}
+                  </div>
+                  <p className="mb-3 text-xs font-semibold text-stone-500">
+                    #{i + 1}
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Họ tên (*)
+                      </label>
+                      <input
+                        type="text"
+                        value={p.fullName}
+                        onChange={(e) =>
+                          setDraft((d) => ({
+                            ...d,
+                            childP: d.childP.map((x, j) =>
+                              j === i
+                                ? { ...x, fullName: e.target.value }
+                                : x,
+                            ),
+                          }))
+                        }
+                        placeholder="Ví dụ: Nguyễn Văn A"
+                        className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Ngày sinh (*)
+                      </label>
+                      <PassengerDobPicker
+                        value={p.dateOfBirth}
+                        onChange={(dateOfBirth) =>
+                          setDraft((d) => ({
+                            ...d,
+                            childP: d.childP.map((x, j) =>
+                              j === i ? { ...x, dateOfBirth } : x,
+                            ),
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Giới tính (*)
+                      </label>
+                      <select
+                        value={p.gender}
+                        onChange={(e) =>
+                          setDraft((d) => ({
+                            ...d,
+                            childP: d.childP.map((x, j) =>
+                              j === i ? { ...x, gender: e.target.value } : x,
+                            ),
+                          }))
+                        }
+                        className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
+                      >
+                        <option value="">Chọn</option>
+                        <option value="Nam">Nam</option>
+                        <option value="Nữ">Nữ</option>
+                        <option value="Khác">Khác</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {draft.infantP.map((p, i) => {
+              const hint =
+                departureDate != null
+                  ? ageBandTooltipLines(departureDate, 'INFANT').join(' ')
+                  : '';
+              return (
+                <div
+                  key={`m-i-${i}`}
+                  className="rounded-xl border border-stone-200 bg-stone-50/40 p-4"
+                >
+                  <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-dashed border-stone-200 pb-3">
+                    <Users className="h-4 w-4 shrink-0 text-[#0b5ea8]" />
+                    <span className="text-sm font-bold text-[#0b5ea8]">
+                      Trẻ nhỏ
+                      {hint ? (
+                        <span className="font-normal"> ({hint})</span>
+                      ) : null}
+                    </span>
+                    {departureDate ? (
+                      <PassengerAgeHint departure={departureDate} band="INFANT" />
+                    ) : null}
+                  </div>
+                  <p className="mb-3 text-xs font-semibold text-stone-500">
+                    #{i + 1}
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Họ tên (*)
+                      </label>
+                      <input
+                        type="text"
+                        value={p.fullName}
+                        onChange={(e) =>
+                          setDraft((d) => ({
+                            ...d,
+                            infantP: d.infantP.map((x, j) =>
+                              j === i
+                                ? { ...x, fullName: e.target.value }
+                                : x,
+                            ),
+                          }))
+                        }
+                        placeholder="Ví dụ: Nguyễn Văn A"
+                        className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Ngày sinh (*)
+                      </label>
+                      <PassengerDobPicker
+                        value={p.dateOfBirth}
+                        onChange={(dateOfBirth) =>
+                          setDraft((d) => ({
+                            ...d,
+                            infantP: d.infantP.map((x, j) =>
+                              j === i ? { ...x, dateOfBirth } : x,
+                            ),
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-stone-600">
+                        Giới tính (*)
+                      </label>
+                      <select
+                        value={p.gender}
+                        onChange={(e) =>
+                          setDraft((d) => ({
+                            ...d,
+                            infantP: d.infantP.map((x, j) =>
+                              j === i ? { ...x, gender: e.target.value } : x,
+                            ),
+                          }))
+                        }
+                        className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 focus:border-[#0b5ea8] focus:outline-none focus:ring-2 focus:ring-sky-200"
+                      >
+                        <option value="">Chọn</option>
+                        <option value="Nam">Nam</option>
+                        <option value="Nữ">Nữ</option>
+                        <option value="Khác">Khác</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        ) : null}
+        </div>
+
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-stone-100 bg-white px-5 py-4">
+          <button
+            type="button"
+            onClick={onReset}
+            className="rounded-xl border border-stone-300 bg-white px-5 py-2.5 text-sm font-semibold text-stone-800 hover:bg-stone-50"
+          >
+            Đặt lại
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-xl bg-[#0b5ea8] px-6 py-2.5 text-sm font-semibold text-white hover:bg-[#0a5190]"
+          >
+            Xác nhận
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -726,13 +1108,19 @@ function OrderSummary({
           0,
         )
       : null;
-  const priceChild = unitPrice != null ? unitPrice * 0.5 : null;
+  const priceChild5to11 =
+    unitPrice != null ? Math.round(unitPrice * 0.9) : null;
+  const priceInfant2to4 =
+    unitPrice != null ? Math.round(unitPrice * 0.5) : null;
   const srPer = tour.singleRoomSupplement ?? null;
   const singleRoomTotal =
     srPer != null && srPer > 0 ? singleRoomCount * srPer : 0;
+  /** Khớp `booking.service` createBooking (làm tròn theo nhóm hành khách). */
   const passengerSubtotal =
     unitPrice != null
-      ? unitPrice * adults + (priceChild ?? 0) * childPassengerQty
+      ? Math.round(unitPrice * adults) +
+        Math.round(unitPrice * 0.9 * childPassengerQty) +
+        Math.round(unitPrice * 0.5 * infants)
       : null;
   const subtotalBeforeDiscount =
     passengerSubtotal != null ? passengerSubtotal + singleRoomTotal : null;
@@ -879,7 +1267,7 @@ function OrderSummary({
                 <div className="flex min-w-0 items-center gap-2">
                   <Users className="h-4 w-4 shrink-0 text-stone-700" />
                   <span className="text-[11px] font-bold uppercase tracking-wide text-stone-900">
-                    Khách hàng + phụ thu
+                    Khách hàng
                   </span>
                 </div>
                 {subtotalBeforeDiscount != null ? (
@@ -899,18 +1287,20 @@ function OrderSummary({
                     </span>
                   </div>
                 ) : null}
-                {childPassengerQty > 0 && priceChild != null ? (
+                {childPassengerQty > 0 && priceChild5to11 != null ? (
                   <div className="flex justify-between gap-2 text-stone-700">
                     <span>Trẻ em</span>
                     <span className="shrink-0 tabular-nums">
-                      {childPassengerQty} × {formatVnd(priceChild)}
+                      {childPassengerQty} × {formatVnd(priceChild5to11)}
                     </span>
                   </div>
                 ) : null}
-                {infants > 0 ? (
+                {infants > 0 && priceInfant2to4 != null ? (
                   <div className="flex justify-between gap-2 text-stone-700">
-                    <span>Em bé</span>
-                    <span className="tabular-nums">0đ</span>
+                    <span>Trẻ nhỏ</span>
+                    <span className="shrink-0 tabular-nums">
+                      {infants} × {formatVnd(priceInfant2to4)}
+                    </span>
                   </div>
                 ) : null}
                 {singleRoomTotal > 0 ? (
@@ -1049,6 +1439,10 @@ function StepEnterInfo({
   notes,
   setNotes,
   loggedIn,
+  bookingForOthers,
+  onBookingForOthersChange,
+  scheduleHasOverlap,
+  scheduleAvailabilityPending,
   monthKeys,
   activeMonthKey,
   setActiveMonthKey,
@@ -1082,6 +1476,11 @@ function StepEnterInfo({
   notes: string;
   setNotes: (s: string) => void;
   loggedIn: boolean;
+  bookingForOthers: boolean;
+  onBookingForOthersChange: (v: boolean) => void;
+  scheduleHasOverlap: (dep: FullSchedule) => boolean;
+  /** Đang chờ /bookings/me — chưa khóa suất trùng */
+  scheduleAvailabilityPending: boolean;
   monthKeys: string[];
   activeMonthKey: string;
   setActiveMonthKey: (k: string) => void;
@@ -1107,7 +1506,149 @@ function StepEnterInfo({
   stepErr: string | null;
 }) {
   const { transports = [], itineraries = [] } = tour;
-  const [scheduleSectionOpen, setScheduleSectionOpen] = useState(false);
+  const [scheduleSectionOpen, setScheduleSectionOpen] = useState(true);
+
+  useEffect(() => {
+    if (scheduleAvailabilityPending) setScheduleSectionOpen(true);
+  }, [scheduleAvailabilityPending]);
+
+  const departureDate = useMemo(() => {
+    for (const g of activeDateGroups) {
+      const hit = g.departures.find((d) => d.id === selectedScheduleId);
+      if (hit) return new Date(hit.startDate);
+    }
+    return null;
+  }, [activeDateGroups, selectedScheduleId]);
+
+  const singleRoomSupplement = tour.singleRoomSupplement ?? null;
+  const hasSingleRoomPricing =
+    singleRoomSupplement != null && singleRoomSupplement > 0;
+
+  const passengerModalSnapRef = useRef<PassengerDraftBundle | null>(null);
+  const [passengerDraft, setPassengerDraft] =
+    useState<PassengerDraftBundle | null>(null);
+  const [passengerModalErr, setPassengerModalErr] = useState<string | null>(
+    null,
+  );
+
+  function openPassengerModal() {
+    const snap = shallowClonePassengerLists(adultP, childP, infantP);
+    passengerModalSnapRef.current = snap;
+    setPassengerDraft(snap);
+    setPassengerModalErr(null);
+  }
+
+  function closePassengerModal() {
+    setPassengerDraft(null);
+    setPassengerModalErr(null);
+  }
+
+  function resetPassengerModal() {
+    const base = passengerModalSnapRef.current;
+    if (!base) return;
+    setPassengerDraft(
+      shallowClonePassengerLists(base.adultP, base.childP, base.infantP),
+    );
+    setPassengerModalErr(null);
+  }
+
+  function confirmPassengerModal() {
+    if (!passengerDraft) return;
+    if (!departureDate) {
+      setPassengerModalErr(
+        'Vui lòng chọn ngày khởi hành trước khi xác nhận thông tin hành khách.',
+      );
+      return;
+    }
+    const dep = departureDate;
+    const d = passengerDraft;
+
+    for (let i = 0; i < d.adultP.length; i++) {
+      const p = d.adultP[i];
+      if (!p.fullName.trim()) {
+        setPassengerModalErr(`Vui lòng nhập họ tên người lớn #${i + 1}.`);
+        return;
+      }
+      if (!p.dateOfBirth) {
+        setPassengerModalErr(`Vui lòng chọn ngày sinh người lớn #${i + 1}.`);
+        return;
+      }
+      if (!p.gender.trim()) {
+        setPassengerModalErr(`Vui lòng chọn giới tính người lớn #${i + 1}.`);
+        return;
+      }
+      const errAge = validateDobForCategory(p.dateOfBirth, 'ADULT', dep);
+      if (errAge) {
+        setPassengerModalErr(`Người lớn #${i + 1}: ${errAge}`);
+        return;
+      }
+    }
+
+    for (let i = 0; i < d.childP.length; i++) {
+      const p = d.childP[i];
+      if (!p.fullName.trim()) {
+        setPassengerModalErr(`Vui lòng nhập họ tên trẻ em #${i + 1}.`);
+        return;
+      }
+      if (!p.dateOfBirth) {
+        setPassengerModalErr(`Vui lòng chọn ngày sinh trẻ em #${i + 1}.`);
+        return;
+      }
+      if (!p.gender.trim()) {
+        setPassengerModalErr(`Vui lòng chọn giới tính trẻ em #${i + 1}.`);
+        return;
+      }
+      const errAge = validateDobForCategory(p.dateOfBirth, 'CHILD', dep);
+      if (errAge) {
+        setPassengerModalErr(`Trẻ em #${i + 1}: ${errAge}`);
+        return;
+      }
+    }
+
+    for (let i = 0; i < d.infantP.length; i++) {
+      const p = d.infantP[i];
+      if (!p.fullName.trim()) {
+        setPassengerModalErr(`Vui lòng nhập họ tên trẻ nhỏ #${i + 1}.`);
+        return;
+      }
+      if (!p.dateOfBirth) {
+        setPassengerModalErr(`Vui lòng chọn ngày sinh trẻ nhỏ #${i + 1}.`);
+        return;
+      }
+      if (!p.gender.trim()) {
+        setPassengerModalErr(`Vui lòng chọn giới tính trẻ nhỏ #${i + 1}.`);
+        return;
+      }
+      const errAge = validateDobForCategory(p.dateOfBirth, 'INFANT', dep);
+      if (errAge) {
+        setPassengerModalErr(`Trẻ nhỏ #${i + 1}: ${errAge}`);
+        return;
+      }
+    }
+
+    const canBookSingle =
+      singleRoomSupplement != null && singleRoomSupplement > 0;
+    setAdultP(
+      d.adultP.map((x) => ({
+        ...x,
+        wantsSingleRoom: canBookSingle ? (x.wantsSingleRoom ?? false) : false,
+      })),
+    );
+    setChildP(d.childP.map((x) => ({ ...x })));
+    setInfantP(d.infantP.map((x) => ({ ...x })));
+    closePassengerModal();
+  }
+
+  function patchPassengerDraft(
+    next: React.SetStateAction<PassengerDraftBundle>,
+  ) {
+    setPassengerDraft((prev) => {
+      if (prev == null) return prev;
+      return typeof next === 'function'
+        ? (next as (p: PassengerDraftBundle) => PassengerDraftBundle)(prev)
+        : next;
+    });
+  }
 
   return (
     <div className="space-y-5">
@@ -1146,6 +1687,184 @@ function StepEnterInfo({
           ) : null}
         </div>
       ) : null}
+
+      {/* Chọn ngày khởi hành — đặt trước phần liên hệ để luôn khóa suất trùng tại bước chọn lịch */}
+      <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setScheduleSectionOpen((v) => !v)}
+          className="flex w-full items-center justify-between gap-3 border-b border-stone-100 pb-3 text-left transition hover:opacity-90"
+          aria-expanded={scheduleSectionOpen}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
+              <Calendar className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-stone-900">
+                Chọn ngày khởi hành
+              </h3>
+            </div>
+          </div>
+          {scheduleSectionOpen ? (
+            <ChevronDown
+              className="h-5 w-5 shrink-0 text-stone-400"
+              aria-hidden
+            />
+          ) : (
+            <ChevronRight
+              className="h-5 w-5 shrink-0 text-stone-400"
+              aria-hidden
+            />
+          )}
+        </button>
+
+        {scheduleSectionOpen ? (
+          <>
+            {scheduleAvailabilityPending ? (
+              <div className="mt-4 flex items-start gap-2 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2.5 text-xs text-sky-950">
+                <Info className="mt-0.5 h-4 w-4 shrink-0 animate-pulse text-sky-600" />
+                <p>
+                  Đang tải các tour bạn đã đặt để{' '}
+                  <span className="font-semibold">vô hiệu hóa suất trùng thời gian</span>.
+                  Vui lòng đợi vài giây rồi mới chọn lịch — tránh chọn nhầm suất
+                  chưa được kiểm tra.
+                </p>
+              </div>
+            ) : null}
+            {/* Month tabs */}
+            <div className="mt-4 flex flex-wrap gap-2">
+              {monthKeys.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  disabled={scheduleAvailabilityPending}
+                  onClick={() => setActiveMonthKey(k)}
+                  className={`rounded-full border px-4 py-1.5 text-sm font-medium transition ${
+                    scheduleAvailabilityPending
+                      ? 'cursor-not-allowed border-stone-200 bg-stone-100 text-stone-400'
+                      : k === activeMonthKey
+                        ? 'border-teal-600 bg-teal-600 text-white shadow-sm'
+                        : 'border-stone-200 bg-white text-stone-600 hover:border-teal-300 hover:bg-teal-50'
+                  }`}
+                >
+                  {monthLabel(k)}
+                </button>
+              ))}
+            </div>
+
+            {/* Date groups */}
+            <div className="mt-4 space-y-4">
+              {activeDateGroups.length === 0 ? (
+                <p className="text-sm text-stone-400">
+                  Không có lịch trong tháng này.
+                </p>
+              ) : (
+                activeDateGroups.map((g) => (
+                  <div
+                    key={g.ymd}
+                    className="rounded-xl border border-stone-200 bg-stone-50"
+                  >
+                    <div className="flex items-center gap-2 border-b border-stone-200 px-4 py-2.5">
+                      <Calendar className="h-4 w-4 text-teal-600" />
+                      <span className="text-sm font-semibold text-stone-800">
+                        Ngày {g.dateLabel}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 p-3">
+                      {g.departures.map((dep) => {
+                        const depStart = new Date(dep.startDate);
+                        const depEnd = new Date(dep.endDate);
+                        const rem = remainingSeatsForSchedule(dep);
+                        const unitP =
+                          dep.priceOverride ?? tour.basePrice ?? null;
+                        const isSelected = dep.id === selectedScheduleId;
+                        const isSoldOut = isScheduleSoldOut(dep);
+                        const overlapBlock = scheduleHasOverlap(dep);
+                        const disabled =
+                          scheduleAvailabilityPending ||
+                          isSoldOut ||
+                          overlapBlock;
+
+                        return (
+                          <button
+                            key={dep.id}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => setSelectedScheduleId(dep.id)}
+                            className={`min-w-[170px] flex-1 rounded-xl border p-3 text-left transition ${
+                              isSelected
+                                ? 'border-teal-600 bg-teal-50 ring-1 ring-teal-500 shadow-sm'
+                                : disabled
+                                  ? overlapBlock
+                                    ? 'cursor-not-allowed border-amber-200 bg-amber-50/80 opacity-70'
+                                    : 'cursor-not-allowed border-stone-200 bg-stone-100 opacity-50'
+                                  : 'border-stone-200 bg-white hover:border-teal-300 hover:bg-teal-50'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5">
+                                <Clock className="h-3.5 w-3.5 text-teal-600" />
+                                <span className="text-sm font-bold text-stone-900">
+                                  {formatVnTime(depStart)}
+                                </span>
+                              </div>
+                              {isSelected ? (
+                                <span className="rounded-full bg-teal-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                                  ✓ Chọn
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-2 space-y-0.5">
+                              <div className="flex justify-between text-xs text-stone-500">
+                                <span>Kết thúc:</span>
+                                <span className="font-medium text-stone-700">
+                                  {formatVnDate(depEnd)}
+                                </span>
+                              </div>
+                              <div className="flex justify-between text-xs text-stone-500">
+                                <span>Số chỗ còn:</span>
+                                <span
+                                  className={`font-semibold ${
+                                    rem == null
+                                      ? 'text-stone-600'
+                                      : rem === 0
+                                        ? 'text-red-600'
+                                        : rem <= 5
+                                          ? 'text-amber-600'
+                                          : 'text-emerald-600'
+                                  }`}
+                                >
+                                  {rem == null
+                                    ? 'Liên hệ'
+                                    : isSoldOut
+                                      ? 'Hết chỗ'
+                                      : rem}
+                                </span>
+                              </div>
+                              {overlapBlock ? (
+                                <p className="text-[11px] font-semibold text-amber-800">
+                                  Trùng thời gian với tour bạn đã đặt
+                                </p>
+                              ) : null}
+                              <div className="flex justify-between text-xs text-stone-500">
+                                <span>Giá/người:</span>
+                                <span className="font-bold text-teal-700">
+                                  {unitP == null ? 'Liên hệ' : formatVnd(unitP)}
+                                </span>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        ) : null}
+      </div>
 
       {/* Thông tin liên lạc */}
       <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
@@ -1229,166 +1948,18 @@ function StepEnterInfo({
             />
           </div>
         </div>
-      </div>
-
-      {/* Schedule picker */}
-      <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-        <button
-          type="button"
-          onClick={() => setScheduleSectionOpen((v) => !v)}
-          className="flex w-full items-center justify-between gap-3 border-b border-stone-100 pb-3 text-left transition hover:opacity-90"
-          aria-expanded={scheduleSectionOpen}
-        >
-          <div className="flex min-w-0 items-center gap-2">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600">
-              <Calendar className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <h3 className="text-sm font-bold text-stone-900">
-                Chọn ngày khởi hành
-              </h3>
-              <p className="text-xs text-stone-400">
-                Chọn tháng, sau đó chọn chuyến phù hợp
-              </p>
-            </div>
-          </div>
-          {scheduleSectionOpen ? (
-            <ChevronDown
-              className="h-5 w-5 shrink-0 text-stone-400"
-              aria-hidden
+        {loggedIn ? (
+          <label className="mt-4 flex cursor-pointer items-center gap-3 rounded-lg border border-amber-100 bg-amber-50/80 px-4 py-3 text-xs text-stone-800">
+            <input
+              type="checkbox"
+              checked={bookingForOthers}
+              onChange={(e) => onBookingForOthersChange(e.target.checked)}
+              className="h-4 w-4 shrink-0 rounded border-stone-300 text-[#0b5ea8] accent-[#0b5ea8]"
             />
-          ) : (
-            <ChevronRight
-              className="h-5 w-5 shrink-0 text-stone-400"
-              aria-hidden
-            />
-          )}
-        </button>
-
-        {scheduleSectionOpen ? (
-          <>
-            {/* Month tabs */}
-            <div className="mt-4 flex flex-wrap gap-2">
-              {monthKeys.map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setActiveMonthKey(k)}
-                  className={`rounded-full border px-4 py-1.5 text-sm font-medium transition ${
-                    k === activeMonthKey
-                      ? 'border-teal-600 bg-teal-600 text-white shadow-sm'
-                      : 'border-stone-200 bg-white text-stone-600 hover:border-teal-300 hover:bg-teal-50'
-                  }`}
-                >
-                  {monthLabel(k)}
-                </button>
-              ))}
-            </div>
-
-            {/* Date groups */}
-            <div className="mt-4 space-y-4">
-              {activeDateGroups.length === 0 ? (
-                <p className="text-sm text-stone-400">
-                  Không có lịch trong tháng này.
-                </p>
-              ) : (
-                activeDateGroups.map((g) => (
-                  <div
-                    key={g.ymd}
-                    className="rounded-xl border border-stone-200 bg-stone-50"
-                  >
-                    <div className="flex items-center gap-2 border-b border-stone-200 px-4 py-2.5">
-                      <Calendar className="h-4 w-4 text-teal-600" />
-                      <span className="text-sm font-semibold text-stone-800">
-                        Ngày {g.dateLabel}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-2 p-3">
-                      {g.departures.map((dep) => {
-                        const depStart = new Date(dep.startDate);
-                        const depEnd = new Date(dep.endDate);
-                        const rem =
-                          dep.availableSeats != null
-                            ? Math.max(
-                                dep.availableSeats - (dep.bookedSeats ?? 0),
-                                0,
-                              )
-                            : null;
-                        const unitP =
-                          dep.priceOverride ?? tour.basePrice ?? null;
-                        const isSelected = dep.id === selectedScheduleId;
-                        const isSoldOut = rem != null && rem <= 0;
-
-                        return (
-                          <button
-                            key={dep.id}
-                            type="button"
-                            disabled={isSoldOut}
-                            onClick={() => setSelectedScheduleId(dep.id)}
-                            className={`min-w-[170px] flex-1 rounded-xl border p-3 text-left transition ${
-                              isSelected
-                                ? 'border-teal-600 bg-teal-50 ring-1 ring-teal-500 shadow-sm'
-                                : isSoldOut
-                                  ? 'cursor-not-allowed border-stone-200 bg-stone-100 opacity-50'
-                                  : 'border-stone-200 bg-white hover:border-teal-300 hover:bg-teal-50'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-1.5">
-                                <Clock className="h-3.5 w-3.5 text-teal-600" />
-                                <span className="text-sm font-bold text-stone-900">
-                                  {formatVnTime(depStart)}
-                                </span>
-                              </div>
-                              {isSelected ? (
-                                <span className="rounded-full bg-teal-600 px-2 py-0.5 text-[10px] font-bold text-white">
-                                  ✓ Chọn
-                                </span>
-                              ) : null}
-                            </div>
-                            <div className="mt-2 space-y-0.5">
-                              <div className="flex justify-between text-xs text-stone-500">
-                                <span>Kết thúc:</span>
-                                <span className="font-medium text-stone-700">
-                                  {formatVnDate(depEnd)}
-                                </span>
-                              </div>
-                              <div className="flex justify-between text-xs text-stone-500">
-                                <span>Số chỗ còn:</span>
-                                <span
-                                  className={`font-semibold ${
-                                    rem == null
-                                      ? 'text-stone-600'
-                                      : rem === 0
-                                        ? 'text-red-600'
-                                        : rem <= 5
-                                          ? 'text-amber-600'
-                                          : 'text-emerald-600'
-                                  }`}
-                                >
-                                  {rem == null
-                                    ? 'Liên hệ'
-                                    : isSoldOut
-                                      ? 'Hết chỗ'
-                                      : rem}
-                                </span>
-                              </div>
-                              <div className="flex justify-between text-xs text-stone-500">
-                                <span>Giá/người:</span>
-                                <span className="font-bold text-teal-700">
-                                  {unitP == null ? 'Liên hệ' : formatVnd(unitP)}
-                                </span>
-                              </div>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </>
+            <span className="font-bold text-amber-950">
+              Đặt hộ cho người khác
+            </span>
+          </label>
         ) : null}
       </div>
 
@@ -1402,40 +1973,41 @@ function StepEnterInfo({
             <h3 className="text-[13px] font-bold uppercase tracking-wide text-[#0b5ea8]">
               Hành khách
             </h3>
-            <p className="text-xs text-stone-500">
-              Theo quy định tour: trẻ em 5–11 tuổi 50% giá; em bé dưới 5 tuổi
-              miễn phí
-            </p>
           </div>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-3">
-          {[
-            {
-              label: 'Người lớn',
-              sub: '12+ tuổi',
-              val: adults,
-              min: 1,
-              set: setAdults,
-              emphasize: adults >= 1,
-            },
-            {
-              label: 'Trẻ em',
-              sub: '5–11 tuổi',
-              val: childPassengerQty,
-              min: 0,
-              set: setChildPassengerQty,
-              emphasize: false,
-            },
-            {
-              label: 'Em bé',
-              sub: 'Dưới 5 tuổi',
-              val: infants,
-              min: 0,
-              set: setInfants,
-              emphasize: false,
-            },
-          ].map((item) => (
+          {(
+            [
+              {
+                label: 'Người lớn',
+                sub: 'Từ 12 tuổi trở lên',
+                band: 'ADULT' as const,
+                val: adults,
+                min: 1,
+                set: setAdults,
+                emphasize: adults >= 1,
+              },
+              {
+                label: 'Trẻ em',
+                sub: 'Từ 5 - 11 tuổi',
+                band: 'CHILD' as const,
+                val: childPassengerQty,
+                min: 0,
+                set: setChildPassengerQty,
+                emphasize: false,
+              },
+              {
+                label: 'Trẻ nhỏ',
+                sub: 'Từ 2 - 4 tuổi',
+                band: 'INFANT' as const,
+                val: infants,
+                min: 0,
+                set: setInfants,
+                emphasize: false,
+              },
+            ] as const
+          ).map((item) => (
             <div
               key={item.label}
               className={[
@@ -1446,7 +2018,10 @@ function StepEnterInfo({
               ].join(' ')}
             >
               <p className="text-xs font-bold text-stone-900">{item.label}</p>
-              <p className="text-[11px] text-stone-500">{item.sub}</p>
+              <div className="mt-0.5 flex items-center gap-1">
+                <p className="text-[11px] text-stone-500">{item.sub}</p>
+                <PassengerAgeHint departure={departureDate} band={item.band} />
+              </div>
               <div className="mt-2 flex items-center justify-between gap-2">
                 <button
                   type="button"
@@ -1470,46 +2045,219 @@ function StepEnterInfo({
           ))}
         </div>
 
-        <p className="mb-3 mt-6 border-t border-stone-100 pt-5 text-[13px] font-bold uppercase tracking-wide text-[#0b5ea8]">
-          Thông tin hành khách
-        </p>
+        <div className="mt-8 space-y-8 border-t border-stone-100 pt-6">
+          <h3 className="text-base font-bold text-stone-900">
+            Thông tin hành khách
+          </h3>
 
-        <div className="space-y-3">
-          {adultP.map((p, i) => (
-            <AdultPassengerBlock
-              key={`a-${i}`}
-              index={i}
-              value={p}
-              onChange={(v) =>
-                setAdultP((arr) => arr.map((x, j) => (j === i ? v : x)))
-              }
-              singleRoomPrice={tour.singleRoomSupplement ?? null}
-            />
-          ))}
-          {childP.map((p, i) => (
-            <PassengerRow
-              key={`c-${i}`}
-              label="Trẻ em"
-              colorClass="bg-green-50 text-green-700"
-              index={i}
-              value={p}
-              onChange={(v) =>
-                setChildP((arr) => arr.map((x, j) => (j === i ? v : x)))
-              }
-            />
-          ))}
-          {infantP.map((p, i) => (
-            <PassengerRow
-              key={`i-${i}`}
-              label="Em bé"
-              colorClass="bg-orange-50 text-orange-700"
-              index={i}
-              value={p}
-              onChange={(v) =>
-                setInfantP((arr) => arr.map((x, j) => (j === i ? v : x)))
-              }
-            />
-          ))}
+          {/* Người lớn — mẫu ảnh 1 */}
+          <section className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-[#0b5ea8]">
+              <Users className="h-4 w-4 shrink-0" />
+              <span>Người lớn</span>
+              {departureDate ? (
+                <PassengerAgeHint departure={departureDate} band="ADULT" />
+              ) : null}
+            </div>
+            {hasSingleRoomPricing ? (
+              <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-relaxed text-[#0b5ea8] sm:text-sm">
+                Phòng đơn áp dụng cho khách trong nhóm người lớn (sinh trước
+                18/05/2014); giá phòng đơn là:{' '}
+                <strong>{formatVnd(singleRoomSupplement)} / phòng</strong>
+              </div>
+            ) : null}
+            <div className="space-y-3">
+              {adultP.map((p, i) => {
+                const wants = p.wantsSingleRoom ?? false;
+                const filled = p.fullName.trim() && p.dateOfBirth && p.gender.trim();
+                return (
+                  <div
+                    key={`row-a-${i}`}
+                    className="flex flex-wrap items-center gap-3 sm:flex-nowrap"
+                  >
+                    <span className="w-8 shrink-0 text-sm font-semibold text-stone-600">
+                      #{i + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={openPassengerModal}
+                      className={[
+                        'flex min-h-[52px] min-w-0 flex-1 items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition',
+                        filled
+                          ? 'border-stone-200 bg-white hover:border-[#0b5ea8] hover:bg-sky-50/50'
+                          : 'border-dashed border-stone-300 bg-white hover:border-[#0b5ea8] hover:bg-sky-50/50',
+                      ].join(' ')}
+                    >
+                      {filled ? (
+                        <span className="flex min-w-0 flex-col gap-0.5">
+                          <span className="truncate text-sm font-semibold text-stone-900">{p.fullName}</span>
+                          <span className="text-xs text-stone-500">
+                            {p.gender} · {formatVnDobYmd(p.dateOfBirth)}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-sm font-medium text-rose-600">
+                          Người lớn (*)
+                        </span>
+                      )}
+                      <span className={['shrink-0 text-sm font-semibold', filled ? 'text-[#0b5ea8]' : 'text-red-600'].join(' ')}>
+                        {filled ? 'Sửa →' : 'Nhập thông tin →'}
+                      </span>
+                    </button>
+                    {hasSingleRoomPricing ? (
+                      <div className="flex shrink-0 flex-col items-center gap-1 pl-1 sm:w-[120px]">
+                        <span className="text-center text-[11px] font-medium text-stone-600">
+                          Phòng đơn:
+                        </span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={wants}
+                          title="Bật nếu người này đăng ký phòng đơn"
+                          onClick={() =>
+                            setAdultP((arr) =>
+                              arr.map((x, j) =>
+                                j === i
+                                  ? {
+                                      ...x,
+                                      wantsSingleRoom: !(
+                                        x.wantsSingleRoom ?? false
+                                      ),
+                                    }
+                                  : x,
+                              ),
+                            )
+                          }
+                          className={[
+                            'relative h-8 w-14 shrink-0 rounded-full transition-colors',
+                            wants ? 'bg-[#0b5ea8]' : 'bg-stone-300',
+                          ].join(' ')}
+                        >
+                          <span
+                            className={[
+                              'absolute top-0.5 h-7 w-7 rounded-full bg-white shadow transition-transform',
+                              wants ? 'left-7' : 'left-0.5',
+                            ].join(' ')}
+                          />
+                        </button>
+                        <span className="text-center text-[10px] font-medium text-[#0b5ea8]">
+                          Phòng đơn
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Trẻ em */}
+          {childP.length > 0 ? (
+            <section className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-[#0b5ea8]">
+                <Users className="h-4 w-4 shrink-0" />
+                <span>Trẻ em</span>
+                {departureDate ? (
+                  <PassengerAgeHint departure={departureDate} band="CHILD" />
+                ) : null}
+              </div>
+              <div className="space-y-3">
+                {childP.map((p, i) => {
+                  const filled = p.fullName.trim() && p.dateOfBirth && p.gender.trim();
+                  return (
+                    <div
+                      key={`row-c-${i}`}
+                      className="flex items-center gap-3"
+                    >
+                      <span className="w-8 shrink-0 text-sm font-semibold text-stone-600">
+                        #{i + 1}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={openPassengerModal}
+                        className={[
+                          'flex min-h-[52px] flex-1 items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition',
+                          filled
+                            ? 'border-stone-200 bg-white hover:border-[#0b5ea8] hover:bg-sky-50/50'
+                            : 'border-dashed border-stone-300 bg-white hover:border-[#0b5ea8] hover:bg-sky-50/50',
+                        ].join(' ')}
+                      >
+                        {filled ? (
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span className="truncate text-sm font-semibold text-stone-900">{p.fullName}</span>
+                            <span className="text-xs text-stone-500">
+                              {p.gender} · {formatVnDobYmd(p.dateOfBirth)}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-sm font-medium text-rose-600">
+                            Trẻ em (*)
+                          </span>
+                        )}
+                        <span className={['shrink-0 text-sm font-semibold', filled ? 'text-[#0b5ea8]' : 'text-red-600'].join(' ')}>
+                          {filled ? 'Sửa →' : 'Nhập thông tin →'}
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
+          {/* Trẻ nhỏ */}
+          {infantP.length > 0 ? (
+            <section className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-[#0b5ea8]">
+                <Users className="h-4 w-4 shrink-0" />
+                <span>Trẻ nhỏ</span>
+                {departureDate ? (
+                  <PassengerAgeHint departure={departureDate} band="INFANT" />
+                ) : null}
+              </div>
+              <div className="space-y-3">
+                {infantP.map((p, i) => {
+                  const filled = p.fullName.trim() && p.dateOfBirth && p.gender.trim();
+                  return (
+                    <div
+                      key={`row-i-${i}`}
+                      className="flex items-center gap-3"
+                    >
+                      <span className="w-8 shrink-0 text-sm font-semibold text-stone-600">
+                        #{i + 1}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={openPassengerModal}
+                        className={[
+                          'flex min-h-[52px] flex-1 items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition',
+                          filled
+                            ? 'border-stone-200 bg-white hover:border-[#0b5ea8] hover:bg-sky-50/50'
+                            : 'border-dashed border-stone-300 bg-white hover:border-[#0b5ea8] hover:bg-sky-50/50',
+                        ].join(' ')}
+                      >
+                        {filled ? (
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span className="truncate text-sm font-semibold text-stone-900">{p.fullName}</span>
+                            <span className="text-xs text-stone-500">
+                              {p.gender} · {formatVnDobYmd(p.dateOfBirth)}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-sm font-medium text-rose-600">
+                            Trẻ nhỏ (*)
+                          </span>
+                        )}
+                        <span className={['shrink-0 text-sm font-semibold', filled ? 'text-[#0b5ea8]' : 'text-red-600'].join(' ')}>
+                          {filled ? 'Sửa →' : 'Nhập thông tin →'}
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
         </div>
 
         <div className="mt-4 flex items-start gap-2 rounded-lg border border-sky-100 bg-sky-50/80 px-3 py-2.5 text-xs text-sky-900">
@@ -1548,8 +2296,40 @@ function StepEnterInfo({
           {stepErr}
         </div>
       ) : null}
+      {passengerDraft ? (
+        <PassengerDetailsModal
+          draft={passengerDraft}
+          setDraft={patchPassengerDraft}
+          departureDate={departureDate}
+          singleRoomPrice={singleRoomSupplement}
+          error={passengerModalErr}
+          onClose={closePassengerModal}
+          onConfirm={confirmPassengerModal}
+          onReset={resetPassengerModal}
+        />
+      ) : null}
     </div>
   );
+}
+
+/* ── mask helpers cho bước thanh toán ── */
+function maskName(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length <= 1) return '****';
+  return parts.map((p, i) => (i === parts.length - 1 ? p : '****')).join(' ');
+}
+
+function maskEmail(email: string): string {
+  const [local, domain] = email.split('@');
+  if (!domain) return '****';
+  const visible = local.slice(-3);
+  return `${'*'.repeat(Math.max(1, local.length - 3))}${visible}@${domain}`;
+}
+
+function maskPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length <= 4) return '****';
+  return '*'.repeat(digits.length - 4) + digits.slice(-4);
 }
 
 /* ══════════════════════════════════════════════
@@ -1589,202 +2369,153 @@ function StepPaymentReview({
     : null;
   const selEnd = selectedSchedule ? new Date(selectedSchedule.endDate) : null;
   const allPassengers = [...adultP, ...childP, ...infantP];
+  const [passengersOpen, setPassengersOpen] = useState(false);
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
-        <p className="border-b border-stone-100 pb-2 text-[12px] font-bold uppercase tracking-wide text-[#0b5ea8]">
+      {/* ── THÔNG TIN LIÊN LẠC ── */}
+      <div className="overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm">
+        <p className="border-b border-stone-200 px-5 py-3 text-[13px] font-bold uppercase tracking-wide text-[#0b5ea8]">
           Thông tin liên lạc
         </p>
-        <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-          <div>
-            <dt className="text-[11px] font-medium uppercase text-stone-500">
-              Họ tên
-            </dt>
-            <dd className="mt-0.5 font-semibold text-stone-900">
-              {contact.fullName}
-            </dd>
+        <div className="px-5 py-4">
+          <div className="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <p className="text-xs font-medium text-stone-400">Họ tên</p>
+              <p className="mt-1 font-medium text-stone-900">{maskName(contact.fullName)}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-stone-400">Email</p>
+              <p className="mt-1 break-all text-stone-700">{maskEmail(contact.email)}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-stone-400">Điện thoại</p>
+              <p className="mt-1 text-stone-700">{maskPhone(contact.phone)}</p>
+            </div>
           </div>
-          <div>
-            <dt className="text-[11px] font-medium uppercase text-stone-500">
-              Điện thoại
-            </dt>
-            <dd className="mt-0.5 text-stone-800">{contact.phone}</dd>
-          </div>
-          <div className="sm:col-span-2">
-            <dt className="text-[11px] font-medium uppercase text-stone-500">
-              Email
-            </dt>
-            <dd className="mt-0.5 text-stone-800">{contact.email}</dd>
-          </div>
-          {contact.address ? (
-            <div className="sm:col-span-2">
-              <dt className="text-[11px] font-medium uppercase text-stone-500">
-                Địa chỉ
-              </dt>
-              <dd className="mt-0.5 text-stone-700">{contact.address}</dd>
+          {notes ? (
+            <div className="mt-3 border-t border-stone-100 pt-3 text-sm">
+              <p className="text-xs font-medium text-stone-400">Ghi chú</p>
+              <p className="mt-1 text-stone-600">{notes}</p>
             </div>
           ) : null}
-        </dl>
-        {notes ? (
-          <p className="mt-3 border-t border-stone-100 pt-3 text-xs leading-relaxed text-stone-600">
-            <span className="font-bold text-stone-800">Ghi chú:</span> {notes}
-          </p>
-        ) : null}
+        </div>
       </div>
 
-      <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
-        <p className="border-b border-stone-100 pb-2 text-[12px] font-bold uppercase tracking-wide text-[#0b5ea8]">
-          Chi tiết booking (dự kiến)
-        </p>
-        <ul className="mt-3 space-y-2.5 text-sm text-stone-800">
-          <li className="flex flex-wrap justify-between gap-2 border-b border-dashed border-stone-100 pb-2">
-            <span className="text-stone-600">Tour</span>
-            <span className="max-w-[16rem] text-right font-semibold">
-              {tour.name}
-            </span>
-          </li>
-          {selStart && selEnd ? (
-            <li className="flex justify-between gap-2">
-              <span className="text-stone-600">Khởi hành</span>
-              <span className="text-right font-medium">
-                {formatVnDate(selStart)} ({formatVnTime(selStart)}) →{' '}
-                {formatVnDate(selEnd)}
-              </span>
-            </li>
-          ) : null}
-          <li className="flex justify-between gap-2">
-            <span className="text-stone-600">Hành trình</span>
-            <span className="text-right text-sm font-medium">
-              {tour.departureLocation?.name ?? '—'}{' '}
-              <ArrowRight className="inline h-3 w-3 text-stone-400" />{' '}
-              {tour.destinationLocation?.name ?? '—'}
-            </span>
-          </li>
-          {unitPrice != null ? (
-            <>
-              <li className="flex justify-between gap-2 pt-2 text-xs text-stone-600">
-                <span>Đơn giá & phụ thu</span>
-                <span>Xem chi tiết ở cột phải</span>
-              </li>
-              {appliedDiscountAmount > 0 && appliedPromoCode ? (
-                <li className="flex justify-between gap-2 text-emerald-700">
-                  <span>Giảm giá ({appliedPromoCode})</span>
-                  <span className="font-semibold">
-                    −{formatVnd(appliedDiscountAmount)}
-                  </span>
-                </li>
-              ) : null}
-              <li className="flex items-baseline justify-between gap-3 border-t border-stone-200 pt-3">
-                <span className="font-bold text-stone-900">
-                  Trị giá dự kiến
-                </span>
-                <span className="text-lg font-black text-red-600 sm:text-xl">
-                  {totalAmount != null ? formatVnd(totalAmount) : 'Liên hệ'}
-                </span>
-              </li>
-            </>
-          ) : (
-            <li className="text-amber-800">
-              Giá vé — vui lòng liên hệ tư vấn viên.
-            </li>
-          )}
-        </ul>
-        <p className="mt-3 rounded-lg bg-sky-50 px-3 py-2 text-xs font-medium leading-relaxed text-[#0b5ea8]">
-          Sau khi bạn xác nhận bên dưới, hệ thống sẽ tạo booking và chuyển bạn
-          sang bước thanh toán trực tuyến.
-        </p>
-      </div>
-
+      {/* ── CHI TIẾT BOOKING ── */}
       <div className="overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm">
-        <p className="border-b border-stone-100 bg-stone-50 px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-stone-900">
-          Danh sách hành khách
+        <p className="border-b border-stone-200 px-5 py-3 text-[13px] font-bold uppercase tracking-wide text-[#0b5ea8]">
+          Chi tiết booking
         </p>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-xs sm:text-sm">
-            <thead>
-              <tr className="border-b border-stone-200 bg-stone-100/80 text-[11px] font-bold uppercase tracking-wide text-stone-700">
-                <th className="px-3 py-2 font-semibold">STT</th>
-                <th className="px-3 py-2 font-semibold">Loại</th>
-                <th className="px-3 py-2 font-semibold">Họ tên</th>
-                <th className="px-3 py-2 font-semibold">Ngày sinh</th>
-                <th className="hidden px-3 py-2 font-semibold sm:table-cell">
-                  Giới tính
-                </th>
-                <th className="hidden px-3 py-2 font-semibold md:table-cell">
-                  Độ tuổi
-                </th>
-                <th className="px-3 py-2 font-semibold">Phòng đơn</th>
-              </tr>
-            </thead>
+        <div className="bg-white">
+          <table className="w-full text-sm">
             <tbody>
-              {(() => {
-                let ai = 0;
-                let ci = 0;
-                let ii = 0;
-                return allPassengers.map((p, idx) => {
-                  let cat: 'ADULT' | 'CHILD' | 'INFANT' = 'ADULT';
-                  let sttLabel = '';
-                  let ageLbl = '';
-                  let singleTxt = '';
-                  if (idx < adultP.length) {
-                    cat = 'ADULT';
-                    sttLabel = `NL ${ai + 1}`;
-                    ageLbl = 'Người lớn';
-                    singleTxt = adultP[ai]?.wantsSingleRoom ? 'Có' : 'Không';
-                    ai += 1;
-                  } else if (idx < adultP.length + childP.length) {
-                    cat = 'CHILD';
-                    sttLabel = `TE ${ci + 1}`;
-                    ageLbl = 'Trẻ em';
-                    singleTxt = '—';
-                    ci += 1;
-                  } else {
-                    cat = 'INFANT';
-                    sttLabel = `EB ${ii + 1}`;
-                    ageLbl = 'Em bé';
-                    singleTxt = '—';
-                    ii += 1;
-                  }
-                  const genderDisp =
-                    cat === 'ADULT' && p.gender?.trim() ? p.gender : '—';
-                  return (
-                    <tr
-                      key={`row-${idx}`}
-                      className="border-t border-stone-100"
-                    >
-                      <td className="px-3 py-2 text-stone-500">{idx + 1}</td>
-                      <td className="px-3 py-2 font-medium text-stone-700">
-                        {sttLabel}
-                      </td>
-                      <td className="max-w-[8rem] px-3 py-2 font-medium text-stone-900 sm:max-w-none">
-                        {p.fullName || '—'}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-stone-600">
-                        {formatVnDobYmd(p.dateOfBirth)}
-                      </td>
-                      <td className="hidden px-3 py-2 text-stone-600 sm:table-cell">
-                        {genderDisp}
-                      </td>
-                      <td className="hidden px-3 py-2 text-stone-600 md:table-cell">
-                        {ageLbl}
-                      </td>
-                      <td className="px-3 py-2 text-stone-600">{singleTxt}</td>
-                    </tr>
-                  );
-                });
-              })()}
+              <tr className="border-b border-stone-100">
+                <td className="w-48 px-5 py-2.5 text-stone-500">Mã đặt chỗ:</td>
+                <td className="px-5 py-2.5 font-bold text-red-600">
+                  (Sẽ tạo sau khi xác nhận)
+                </td>
+              </tr>
+              <tr className="border-b border-stone-100">
+                <td className="px-5 py-2.5 text-stone-500">Ngày tạo:</td>
+                <td className="px-5 py-2.5 text-stone-800">
+                  {new Date().toLocaleString('vi-VN', {
+                    timeZone: 'Asia/Ho_Chi_Minh',
+                    day: '2-digit', month: '2-digit', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit',
+                  })}
+                </td>
+              </tr>
+              <tr className="border-b border-stone-100">
+                <td className="w-48 px-5 py-2.5 text-stone-500">Trị giá booking:</td>
+                <td className="px-5 py-2.5 font-semibold text-stone-900">
+                  {totalAmount != null ? formatVnd(totalAmount) : 'Liên hệ'}
+                </td>
+              </tr>
+              {appliedDiscountAmount > 0 && appliedPromoCode ? (
+                <tr className="border-b border-stone-100">
+                  <td className="px-5 py-2.5 text-stone-500">Giảm giá ({appliedPromoCode}):</td>
+                  <td className="px-5 py-2.5 font-semibold text-emerald-700">
+                    −{formatVnd(appliedDiscountAmount)}
+                  </td>
+                </tr>
+              ) : null}
+              <tr className="border-b border-stone-100">
+                <td className="px-5 py-2.5 text-stone-500">Số tiền đã thanh toán:</td>
+                <td className="px-5 py-2.5 font-bold text-stone-900">{formatVnd(0)}</td>
+              </tr>
+              <tr className="border-b border-stone-100">
+                <td className="px-5 py-2.5 text-stone-500">Số tiền còn lại:</td>
+                <td className="px-5 py-2.5 font-semibold text-stone-900">
+                  {totalAmount != null ? formatVnd(totalAmount) : 'Liên hệ'}
+                </td>
+              </tr>
+              <tr className="border-b border-stone-100">
+                <td className="px-5 py-2.5 text-stone-500">Tình trạng:</td>
+                <td className="px-5 py-2.5 font-bold italic text-[#0b5ea8]">
+                  Chờ xác nhận thanh toán
+                </td>
+              </tr>
+              <tr>
+                <td className="px-5 py-2.5 text-stone-500">Thời hạn thanh toán:</td>
+                <td className="px-5 py-2.5">
+                  <span className="font-bold text-red-600">
+                    Sau khi xác nhận
+                  </span>
+                  <span className="ml-1 text-xs italic text-red-500">
+                    - (Theo giờ Việt Nam. Booking sẽ tự động hủy nếu quá thời hạn thanh toán)
+                  </span>
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
-        {totalAmount != null ? (
-          <div className="flex flex-wrap justify-end border-t border-stone-100 bg-stone-50 px-4 py-3">
-            <span className="text-xs font-semibold uppercase text-stone-600 sm:text-sm">
-              Tổng cộng:
-            </span>
-            <span className="ml-2 text-lg font-black text-red-600 sm:text-xl">
-              {formatVnd(totalAmount)}
-            </span>
+      </div>
+
+      {/* ── DANH SÁCH HÀNH KHÁCH (collapsible) ── */}
+      <div className="overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm">
+        <button
+          type="button"
+          onClick={() => setPassengersOpen((v) => !v)}
+          className="flex w-full items-center justify-between border-b border-stone-200 px-5 py-3 text-left"
+        >
+          <span className="text-[13px] font-bold uppercase tracking-wide text-[#0b5ea8]">
+            Danh sách hành khách
+          </span>
+          {passengersOpen ? (
+            <ChevronDown className="h-5 w-5 text-stone-400 rotate-180 transition-transform" />
+          ) : (
+            <ChevronDown className="h-5 w-5 text-stone-400 transition-transform" />
+          )}
+        </button>
+        {passengersOpen ? (
+          <div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-stone-200 bg-stone-50 text-left text-[11px] font-semibold uppercase text-stone-500">
+                    <th className="px-5 py-2.5">Họ tên</th>
+                    <th className="px-5 py-2.5">Ngày sinh</th>
+                    <th className="px-5 py-2.5">Giới tính</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-stone-100">
+                  {allPassengers.map((p, idx) => (
+                    <tr key={`row-${idx}`}>
+                      <td className="px-5 py-2.5 font-medium text-stone-900">
+                        {p.fullName || '—'}
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-2.5 text-stone-600">
+                        {formatVnDobYmd(p.dateOfBirth)}
+                      </td>
+                      <td className="px-5 py-2.5 text-stone-600">
+                        {p.gender?.trim() || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : null}
       </div>
@@ -1830,10 +2561,12 @@ export default function TourBookingClient({
 
   const schedules = useMemo<FullSchedule[]>(
     () =>
-      [...(tour.schedules ?? [])].sort(
-        (a, b) =>
-          new Date(a.startDate).getTime() - new Date(b.startDate).getTime(),
-      ) as FullSchedule[],
+      [...(tour.schedules ?? [])]
+        .filter((s) => isScheduleBookable(s.startDate))
+        .sort(
+          (a, b) =>
+            new Date(a.startDate).getTime() - new Date(b.startDate).getTime(),
+        ) as FullSchedule[],
     [tour.schedules],
   );
 
@@ -1869,15 +2602,16 @@ export default function TourBookingClient({
     () => {
       if (preselectedScheduleId) {
         const m = schedules.find((s) => s.id === preselectedScheduleId);
-        if (m) return m.id;
+        if (m && !isScheduleSoldOut(m)) return m.id;
       }
-      return schedules[0]?.id ?? null;
+      return firstScheduleWithSeats(schedules)?.id ?? null;
     },
   );
   useEffect(() => {
-    if (!selectedScheduleId && schedules[0]?.id)
-      setSelectedScheduleId(schedules[0].id);
-  }, [selectedScheduleId, schedules]);
+    if (schedules.length === 0) {
+      if (selectedScheduleId != null) setSelectedScheduleId(null);
+    }
+  }, [schedules.length, selectedScheduleId]);
 
   const monthKeys = useMemo(() => {
     const k = new Set<string>();
@@ -1940,7 +2674,13 @@ export default function TourBookingClient({
   const [children, setChildren] = useState(0);
   const [infants, setInfants] = useState(0);
   const [adultP, setAdultP] = useState<PassengerForm[]>([
-    { fullName: '', dateOfBirth: '', gender: '', wantsSingleRoom: false },
+    {
+      fullName: '',
+      dateOfBirth: '',
+      gender: '',
+      wantsSingleRoom: false,
+      phone: '',
+    },
   ]);
   const [childP, setChildP] = useState<PassengerForm[]>([]);
   const [infantP, setInfantP] = useState<PassengerForm[]>([]);
@@ -1955,6 +2695,7 @@ export default function TourBookingClient({
           dateOfBirth: '',
           gender: '',
           wantsSingleRoom: false,
+          phone: '',
         };
       }),
     );
@@ -1963,7 +2704,13 @@ export default function TourBookingClient({
     setChildP((p) =>
       Array.from(
         { length: children },
-        (_, i) => p[i] ?? { fullName: '', dateOfBirth: '', gender: '' },
+        (_, i) =>
+          p[i] ?? {
+            fullName: '',
+            dateOfBirth: '',
+            gender: '',
+            phone: '',
+          },
       ),
     );
   }, [children]);
@@ -1971,10 +2718,26 @@ export default function TourBookingClient({
     setInfantP((p) =>
       Array.from(
         { length: infants },
-        (_, i) => p[i] ?? { fullName: '', dateOfBirth: '', gender: '' },
+        (_, i) =>
+          p[i] ?? {
+            fullName: '',
+            dateOfBirth: '',
+            gender: '',
+            phone: '',
+          },
       ),
     );
   }, [infants]);
+
+  /** Tour không cấu hình phụ thu phòng đơn → tắt hết cờ phòng đơn */
+  useEffect(() => {
+    const sr = tour.singleRoomSupplement;
+    if (sr != null && Number(sr) > 0) return;
+    setAdultP((arr) => {
+      if (!arr.some((p) => p.wantsSingleRoom)) return arr;
+      return arr.map((p) => ({ ...p, wantsSingleRoom: false }));
+    });
+  }, [tour.id, tour.singleRoomSupplement]);
 
   /* ── contact ── */
   const storedEmail = useMemo(() => getStoredUserEmail(), []);
@@ -1985,6 +2748,17 @@ export default function TourBookingClient({
     address: '',
   });
   const [notes, setNotes] = useState('');
+
+  const [bookingForOthers, setBookingForOthers] = useState(false);
+  const [profileDefaults, setProfileDefaults] = useState<{
+    fullName: string;
+    email: string;
+    phone: string;
+    address: string;
+  } | null>(null);
+  const [myBookings, setMyBookings] = useState<BookingListItem[]>([]);
+  const [myBookingsLoading, setMyBookingsLoading] = useState(false);
+  const prevBookingForOthers = useRef(false);
 
   const singleRoomCount = useMemo(
     () => adultP.filter((p) => p.wantsSingleRoom).length,
@@ -2006,15 +2780,174 @@ export default function TourBookingClient({
     setAppliedDiscountAmount(0);
   }, [adults, children, infants, singleRoomCount, selectedScheduleId]);
 
+  useEffect(() => {
+    if (!loggedIn) setBookingForOthers(false);
+  }, [loggedIn]);
+
+  useEffect(() => {
+    if (!(mounted && loggedIn)) {
+      setProfileDefaults(null);
+      return;
+    }
+    const token = localStorage.getItem(AUTH_KEYS.accessToken);
+    if (!token) return;
+    void getMe(token).then((r) => {
+      if (!r.ok) return;
+      const d = r.data;
+      const fn = [d.firstName, d.lastName].filter(Boolean).join(' ').trim();
+      setProfileDefaults({
+        fullName: fn,
+        email: d.email ?? '',
+        phone: d.phone ?? '',
+        address: '',
+      });
+    });
+  }, [mounted, loggedIn]);
+
+  useEffect(() => {
+    if (!loggedIn || bookingForOthers) {
+      setMyBookings([]);
+      setMyBookingsLoading(false);
+      return;
+    }
+    setMyBookingsLoading(true);
+    void getMyBookings().then((r) => {
+      if (r.ok) setMyBookings(r.data);
+      else setMyBookings([]);
+      setMyBookingsLoading(false);
+    });
+  }, [loggedIn, bookingForOthers]);
+
+  useEffect(() => {
+    if (!loggedIn || bookingForOthers || !profileDefaults) return;
+    setContact((c) => {
+      if (c.fullName.trim() && c.phone.trim()) return c;
+      return {
+        ...profileDefaults,
+        address: c.address,
+        email: c.email.trim() || profileDefaults.email,
+      };
+    });
+  }, [loggedIn, bookingForOthers, profileDefaults]);
+
+  useEffect(() => {
+    const prev = prevBookingForOthers.current;
+    prevBookingForOthers.current = bookingForOthers;
+
+    if (bookingForOthers && !prev) {
+      setContact({ fullName: '', email: '', phone: '', address: '' });
+      setNotes('');
+      setAdults(1);
+      setChildren(0);
+      setInfants(0);
+      setAdultP([
+        {
+          fullName: '',
+          dateOfBirth: '',
+          gender: '',
+          wantsSingleRoom: false,
+          phone: '',
+        },
+      ]);
+      setChildP([]);
+      setInfantP([]);
+      setAppliedPromoCode(null);
+      setAppliedDiscountAmount(0);
+    } else if (!bookingForOthers && prev && profileDefaults) {
+      setContact(profileDefaults);
+      setAdultP([
+        {
+          fullName: '',
+          dateOfBirth: '',
+          gender: '',
+          wantsSingleRoom: false,
+          phone: '',
+        },
+      ]);
+      setChildP([]);
+      setInfantP([]);
+    }
+  }, [bookingForOthers, profileDefaults]);
+
+  const scheduleHasOverlap = useMemo(() => {
+    if (!loggedIn || bookingForOthers) return () => false;
+    const nowMs = Date.now();
+    const ranges = myBookings
+      .filter((b) => myBookingBlocksOverlap(b, nowMs))
+      .map((b) => ({
+        start: new Date(b.schedule.startDate),
+        end: new Date(b.schedule.endDate),
+      }));
+    return (s: FullSchedule) => {
+      const ns = new Date(s.startDate);
+      const ne = new Date(s.endDate);
+      return ranges.some((r) =>
+        schedulesOverlapUtc(ns, ne, r.start, r.end),
+      );
+    };
+  }, [loggedIn, bookingForOthers, myBookings]);
+
+  useEffect(() => {
+    if (schedules.length === 0) return;
+    const exists =
+      selectedScheduleId != null &&
+      schedules.some((s) => s.id === selectedScheduleId);
+    if (!exists) {
+      if (selectedScheduleId != null) {
+        const pick =
+          schedules.find(
+            (s) =>
+              !isScheduleSoldOut(s) &&
+              !(loggedIn && !bookingForOthers && scheduleHasOverlap(s)),
+          ) ??
+          schedules.find((s) => !isScheduleSoldOut(s));
+        if (pick) setSelectedScheduleId(pick.id);
+      }
+      return;
+    }
+    const current = schedules.find((x) => x.id === selectedScheduleId);
+    if (current && isScheduleSoldOut(current)) {
+      setSelectedScheduleId(null);
+      setStepErr('Đã hết chỗ — vui lòng chọn lịch khởi hành khác.');
+      return;
+    }
+    if (
+      loggedIn &&
+      !bookingForOthers &&
+      !myBookingsLoading &&
+      selectedScheduleId != null
+    ) {
+      const s = schedules.find((x) => x.id === selectedScheduleId);
+      if (s && scheduleHasOverlap(s)) {
+        setSelectedScheduleId(null);
+        setStepErr(
+          'Lịch bạn chọn trùng thời gian với tour đã đặt. Vui lòng chọn một suất khác trong danh sách (các suất trùng đã bị vô hiệu hóa).',
+        );
+      }
+    }
+  }, [
+    schedules,
+    selectedScheduleId,
+    loggedIn,
+    bookingForOthers,
+    scheduleHasOverlap,
+    myBookingsLoading,
+  ]);
+
   /* ── price ── */
   const unitPrice = selectedSchedule?.priceOverride ?? tour.basePrice ?? null;
-  const priceChild = unitPrice != null ? unitPrice * 0.5 : null;
+  const priceChild5to11 =
+    unitPrice != null ? Math.round(unitPrice * 0.9) : null;
+  const priceInfant2to4 =
+    unitPrice != null ? Math.round(unitPrice * 0.5) : null;
   const srPer = tour.singleRoomSupplement ?? null;
   const singleRoomSupplementTotal =
     srPer != null && srPer > 0 ? singleRoomCount * srPer : 0;
   const passengerSubtotal =
     unitPrice != null
-      ? unitPrice * adults + (priceChild ?? 0) * children
+      ? Math.round(unitPrice * adults) +
+        Math.round(unitPrice * 0.9 * children) +
+        Math.round(unitPrice * 0.5 * infants)
       : null;
   const subtotalBeforeDiscount =
     passengerSubtotal != null
@@ -2032,16 +2965,34 @@ export default function TourBookingClient({
     if (!contact.fullName.trim() || !em || !contact.phone.trim()) return false;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return false;
     const passengers = [...adultP, ...childP, ...infantP];
-    if (passengers.some((p) => !p.fullName.trim() || !p.dateOfBirth)) {
+    if (
+      passengers.some(
+        (p) => !p.fullName.trim() || !p.dateOfBirth || !p.gender.trim(),
+      )
+    ) {
       return false;
     }
-    if (adultP.some((p) => !p.gender.trim())) return false;
     return true;
   }, [selectedScheduleId, contact, adultP, childP, infantP]);
 
-  /** Nút «Đặt ngay» chỉ khi đủ thông tin và đã tích đồng ý điều khoản. */
+  const step1AgeOk = useMemo(() => {
+    if (!selectedSchedule) return false;
+    const dep = new Date(selectedSchedule.startDate);
+    const rows: { dateOfBirth: string; c: 'ADULT' | 'CHILD' | 'INFANT' }[] = [
+      ...adultP.map((p) => ({ dateOfBirth: p.dateOfBirth, c: 'ADULT' as const })),
+      ...childP.map((p) => ({ dateOfBirth: p.dateOfBirth, c: 'CHILD' as const })),
+      ...infantP.map((p) => ({ dateOfBirth: p.dateOfBirth, c: 'INFANT' as const })),
+    ];
+    for (const row of rows) {
+      if (!row.dateOfBirth?.trim()) return false;
+      if (validateDobForCategory(row.dateOfBirth, row.c, dep)) return false;
+    }
+    return true;
+  }, [selectedSchedule, adultP, childP, infantP]);
+
+  /** Nút «Đặt ngay» chỉ khi đủ thông tin, tuổi khớp nhóm, và đã tích đồng ý điều khoản. */
   const step1ShowsBookNow =
-    step1EssentialInfoComplete && agreedToTerms;
+    step1EssentialInfoComplete && agreedToTerms && step1AgeOk;
 
   async function applyPromoFromModal() {
     setPromoErr(null);
@@ -2084,12 +3035,42 @@ export default function TourBookingClient({
     if (step !== 2) setPaymentDrawerOpen(false);
   }, [step]);
 
+  useEffect(() => {
+    if (selectedScheduleId != null) setStepErr(null);
+  }, [selectedScheduleId]);
+
   /* ── step nav ── */
   function goToPaymentStep() {
     setStepErr(null);
     setTermsHighlight(false);
     if (!selectedScheduleId) {
       setStepErr('Vui lòng chọn lịch khởi hành.');
+      return;
+    }
+    if (loggedIn && !bookingForOthers && myBookingsLoading) {
+      setStepErr('Đang kiểm tra lịch trùng với tour bạn đã đặt. Vui lòng đợi thêm giây lát.');
+      return;
+    }
+    if (selectedSchedule && scheduleHasOverlap(selectedSchedule)) {
+      setStepErr(
+        'Lịch này trùng thời gian với tour bạn đã đặt. Chọn ngày khác hoặc tick «Đặt hộ cho người khác».',
+      );
+      return;
+    }
+    if (selectedSchedule && isScheduleSoldOut(selectedSchedule)) {
+      setStepErr('Đã hết chỗ — vui lòng chọn lịch khởi hành khác.');
+      return;
+    }
+    const partySize = adults + children + infants;
+    const seatsLeft = selectedSchedule
+      ? remainingSeatsForSchedule(selectedSchedule)
+      : null;
+    if (seatsLeft != null && partySize > seatsLeft) {
+      setStepErr(
+        seatsLeft <= 0
+          ? 'Đã hết chỗ — vui lòng chọn lịch khởi hành khác.'
+          : `Lịch này chỉ còn ${seatsLeft} chỗ — không đủ cho nhóm của bạn (${partySize} người). Vui lòng giảm số lượng hoặc chọn lịch khác.`,
+      );
       return;
     }
     if (
@@ -2112,9 +3093,49 @@ export default function TourBookingClient({
       );
       return;
     }
-    if (adultP.some((p) => !p.gender.trim())) {
-      setStepErr('Vui lòng chọn giới tính cho tất cả người lớn.');
+    if (allP.some((p) => !p.gender.trim())) {
+      setStepErr('Vui lòng chọn giới tính cho tất cả hành khách.');
       return;
+    }
+    const dep = selectedSchedule
+      ? new Date(selectedSchedule.startDate)
+      : null;
+    if (!dep || Number.isNaN(dep.getTime())) {
+      setStepErr('Không xác định được ngày khởi hành. Vui lòng chọn lịch lại.');
+      return;
+    }
+    for (let i = 0; i < adultP.length; i++) {
+      const err = validateDobForCategory(
+        adultP[i].dateOfBirth,
+        'ADULT',
+        dep,
+      );
+      if (err) {
+        setStepErr(`Người lớn #${i + 1}: ${err}`);
+        return;
+      }
+    }
+    for (let i = 0; i < childP.length; i++) {
+      const err = validateDobForCategory(
+        childP[i].dateOfBirth,
+        'CHILD',
+        dep,
+      );
+      if (err) {
+        setStepErr(`Trẻ em #${i + 1}: ${err}`);
+        return;
+      }
+    }
+    for (let i = 0; i < infantP.length; i++) {
+      const err = validateDobForCategory(
+        infantP[i].dateOfBirth,
+        'INFANT',
+        dep,
+      );
+      if (err) {
+        setStepErr(`Trẻ nhỏ #${i + 1}: ${err}`);
+        return;
+      }
     }
     if (!agreedToTerms) {
       setTermsHighlight(true);
@@ -2166,6 +3187,7 @@ export default function TourBookingClient({
         notes: notes.trim() || undefined,
         singleRoomCount,
         ...(appliedPromoCode ? { discountCode: appliedPromoCode } : {}),
+        bookingForSelf: !bookingForOthers,
       };
       const res = await createBooking(payload);
       if (!res.ok) {
@@ -2200,10 +3222,14 @@ export default function TourBookingClient({
       >
         <AlertCircle className="mx-auto h-12 w-12 text-amber-400" />
         <h1 className="mt-4 text-xl font-bold text-stone-900">
-          Chưa có lịch khởi hành
+          {tour.schedules && tour.schedules.length > 0
+            ? 'Không còn lịch khởi hành phù hợp'
+            : 'Chưa có lịch khởi hành'}
         </h1>
         <p className="mt-2 text-sm text-stone-500">
-          Tour này hiện chưa có lịch khởi hành. Vui lòng quay lại sau.
+          {tour.schedules && tour.schedules.length > 0
+            ? 'Các lịch đã qua hoặc không còn mở đặt chỗ. Vui lòng chọn tour khác hoặc liên hệ tư vấn.'
+            : 'Tour này hiện chưa có lịch khởi hành. Vui lòng quay lại sau.'}
         </p>
         <Link
           href={`/tours/${tour.id}`}
@@ -2217,7 +3243,7 @@ export default function TourBookingClient({
 
   return (
     <div className="min-h-screen bg-stone-50">
-      {/* ── Page header: Quay lại + ĐẶT TOUR + bước (căn giữa) ── */}
+      {/* ── Page header: Quay lại + tiêu đề + bước (căn giữa) ── */}
       <div
         ref={bookingPageStartRef}
         className="border-b border-stone-200 bg-white"
@@ -2232,10 +3258,10 @@ export default function TourBookingClient({
               Quay lại
             </Link>
           </div>
-          <h1 className="mt-6 text-center text-2xl font-bold tracking-[0.2em] text-[#0b5ea8] sm:mt-8 sm:text-3xl">
-            ĐẶT TOUR
+          <h1 className="mt-6 text-center text-2xl font-bold tracking-tight text-[#0b5ea8] sm:mt-8 sm:text-3xl">
+            Đặt tour của bạn
           </h1>
-          <p className="mx-auto mt-2 max-w-lg px-2 text-center text-sm text-stone-600 sm:mt-3">
+          <p className="mx-auto mt-2 max-w-2xl px-2 text-center text-sm text-stone-600 sm:mt-3">
             {STEP_SUBLINE[step]}
           </p>
           <BookingFlowStepper variant="booking" activeStep={step} />
@@ -2264,6 +3290,10 @@ export default function TourBookingClient({
                 <StepEnterInfo
                   tour={tour}
                   loggedIn={loggedIn}
+                  bookingForOthers={bookingForOthers}
+                  onBookingForOthersChange={setBookingForOthers}
+                  scheduleHasOverlap={scheduleHasOverlap}
+                  scheduleAvailabilityPending={myBookingsLoading}
                   contact={contact}
                   setContact={setContact}
                   notes={notes}

@@ -419,8 +419,9 @@ body {
   border-color: #d92d20;
 }
 
-.tour-date-chip--selected {
-  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #d92d20;
+/* Mặc định / đang chọn: cùng kiểu viền đỏ + nền trắng — nền đỏ chỉ khi :hover / :focus-visible ở trên */
+.tour-date-chip.tour-date-chip--selected {
+  font-weight: 600;
 }
 
 /* ===== Favorites masonry thumbnails ===== */

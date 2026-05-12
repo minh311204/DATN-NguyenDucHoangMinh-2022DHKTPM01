@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prima.service'
 import { TourTagService } from './tour-tag.service'
+import { catalogTagTourWhereClause } from './catalog-tag-tour-line'
 import {
   CreateTourSchema,
   TourListQuerySchema,
@@ -33,6 +34,15 @@ function num(d: unknown): number | null {
 function iso(d: Date | null | undefined): string | null {
   if (d == null) return null
   return d.toISOString()
+}
+
+/** Đọc deletedAt khi kiểu Prisma có thể chưa sync sau migrate/generate */
+function scheduleDeletedAtIso(s: {
+  id: number
+  deletedAt?: Date | null
+}): string | null {
+  const d = s.deletedAt
+  return d ? d.toISOString() : null
 }
 
 function validateSchedulePayload(
@@ -87,24 +97,48 @@ export class TourService {
 
   // ---------- Tours (list & detail) ----------
 
-  async getTours(query: TourListQuery) {
-    /** Mặc định chỉ tour đang mở — tránh lộ tour đã tắt khi client quên gửi `isActive` */
+  async getTours(
+    rawQuery: unknown,
+    opts?: { canQueryInactive?: boolean },
+  ) {
+    await this.softArchiveAllFullyCompletedTours()
+    const query = TourListQuerySchema.parse(rawQuery)
+    /**
+     * Công khai: luôn chỉ tour đang mở (`isActive === true`), bất kể query — tránh `?isActive=false`.
+     * ADMIN (JWT): được lọc theo `isActive` true/false cho trang quản lý.
+     */
     const isActive =
-      query.isActive === 'true'
-        ? true
-        : query.isActive === 'false'
-          ? false
-          : true
+      opts?.canQueryInactive === true
+        ? query.isActive === 'true'
+          ? true
+          : query.isActive === 'false'
+            ? false
+            : true
+        : true
+
+    let catalogTagFilter: Prisma.TourWhereInput | undefined
+    if (query.tagId != null) {
+      const tag = await this.prisma.tourTag.findUnique({
+        where: { id: query.tagId },
+        select: { name: true },
+      })
+      catalogTagFilter = tag
+        ? catalogTagTourWhereClause(query.tagId, tag.name)
+        : { tags: { some: { tagId: query.tagId } } }
+    }
 
     let departureScheduleFilter: Prisma.TourWhereInput | undefined
     if (query.departureDate) {
       const start = new Date(`${query.departureDate}T00:00:00.000Z`)
       const end = new Date(start.getTime() + 24 * 60 * 60 * 1000)
+      const departureSchedulesSome = {
+        startDate: { gte: start, lt: end },
+        status: { not: 'CANCELLED' as const },
+        deletedAt: null,
+      }
       departureScheduleFilter = {
         schedules: {
-          some: {
-            startDate: { gte: start, lt: end },
-          },
+          some: departureSchedulesSome,
         },
       }
     }
@@ -117,14 +151,21 @@ export class TourService {
         ? { destinationLocationId: query.destinationLocationId }
         : {}),
       isActive,
-      ...(query.q ? { name: { contains: query.q } } : {}),
+      ...(query.q
+        ? {
+            OR: [
+              { name: { contains: query.q } },
+              { description: { contains: query.q } },
+              { departureLocation: { name: { contains: query.q } } },
+              { destinationLocation: { name: { contains: query.q } } },
+            ],
+          }
+        : {}),
       ...budgetWhere(query.budget),
       ...(query.tourLine ? { tourLine: query.tourLine } : {}),
       ...(query.transportType ? { transportType: query.transportType } : {}),
       ...(query.featured === 'true' ? { isFeatured: true } : {}),
-      ...(query.tagId != null
-        ? { tags: { some: { tagId: query.tagId } } }
-        : {}),
+      ...(catalogTagFilter ?? {}),
       ...(departureScheduleFilter ?? {}),
     }
 
@@ -132,7 +173,7 @@ export class TourService {
       departureLocation: { select: { id: true, name: true } },
       destinationLocation: { select: { id: true, name: true } },
       schedules: {
-        where: { status: { not: 'CANCELLED' as const } },
+        where: this.scheduleWhereVisibleToUser(),
         orderBy: { startDate: 'asc' as const },
       },
       tags: {
@@ -247,7 +288,68 @@ export class TourService {
     }
   }
 
-  private async loadTourDetail(id: number) {
+  /** Lịch còn hiển thị / đặt chỗ trên site user (chưa xóa mềm, không hủy). */
+  private scheduleWhereVisibleToUser(): Prisma.TourScheduleWhereInput {
+    const w = {
+      deletedAt: null,
+      NOT: { status: 'CANCELLED' as const },
+    }
+    return w
+  }
+
+  /**
+   * Khi mọi lịch của tour (chưa xóa mềm) đều đã kết thúc → gán deletedAt (ẩn khỏi user).
+   */
+  private async softArchiveSchedulesIfTourFullyCompleted(tourId: number) {
+    const now = new Date()
+    const activeWhere = { tourId, deletedAt: null }
+    const active = await this.prisma.tourSchedule.findMany({
+      where: activeWhere,
+      select: { endDate: true },
+    })
+    if (active.length === 0) return
+    if (!active.every((s) => s.endDate < now)) return
+    const archiveData = { deletedAt: now }
+    await this.prisma.tourSchedule.updateMany({
+      where: activeWhere,
+      data: archiveData,
+    })
+  }
+
+  /** Dùng trước danh sách tour: cập nhật hàng loạt các tour thỏa điều kiện. */
+  private async softArchiveAllFullyCompletedTours() {
+    const now = new Date()
+    const rows = await this.prisma.$queryRaw<{ tourId: number }[]>(
+      Prisma.sql`
+        SELECT s.tourId FROM TourSchedule s
+        WHERE s.deletedAt IS NULL
+        GROUP BY s.tourId
+        HAVING MAX(s.endDate) < ${now}
+      `,
+    )
+    for (const row of rows) {
+      const rowWhere = { tourId: row.tourId, deletedAt: null }
+      const rowData = { deletedAt: now }
+      await this.prisma.tourSchedule.updateMany({
+        where: rowWhere,
+        data: rowData,
+      })
+    }
+  }
+
+  private async loadTourDetail(
+    id: number,
+    opts?: { includeDeletedSchedules?: boolean },
+  ) {
+    await this.softArchiveSchedulesIfTourFullyCompleted(id)
+    let scheduleWhere: Prisma.TourScheduleWhereInput | undefined
+    if (opts?.includeDeletedSchedules) {
+      scheduleWhere = undefined
+    } else {
+      const onlyVisible = { deletedAt: null } as Prisma.TourScheduleWhereInput
+      scheduleWhere = onlyVisible
+    }
+
     const t = await this.prisma.tour.findUnique({
       where: { id },
       include: {
@@ -255,7 +357,10 @@ export class TourService {
         destinationLocation: { select: { id: true, name: true } },
         images: { orderBy: { id: 'asc' } },
         videos: { orderBy: { id: 'asc' } },
-        schedules: { orderBy: { startDate: 'asc' } },
+        schedules: {
+          ...(scheduleWhere != null ? { where: scheduleWhere } : {}),
+          orderBy: { startDate: 'asc' },
+        },
         itineraries: {
           orderBy: { dayNumber: 'asc' },
           include: {
@@ -326,6 +431,7 @@ export class TourService {
         bookedSeats: s.bookedSeats,
         priceOverride: num(s.priceOverride),
         status: s.status,
+        deletedAt: scheduleDeletedAtIso(s),
       })),
       itineraries: t.itineraries.map((it) => ({
         id: it.id,
@@ -384,7 +490,9 @@ export class TourService {
    * Khách (site User): chỉ `isActive === true`. ADMIN (JWT): có thể xem cả tour đã tắt.
    */
   async getTourById(id: number, opts?: { allowInactive?: boolean }) {
-    const detail = await this.loadTourDetail(id)
+    const detail = await this.loadTourDetail(id, {
+      includeDeletedSchedules: opts?.allowInactive === true,
+    })
     if (!detail) throw new NotFoundException('Tour not found')
     const allowInactive = opts?.allowInactive === true
     if (!allowInactive && detail.isActive !== true) {
@@ -409,7 +517,7 @@ export class TourService {
         new Date(s.startDate),
         new Date(s.endDate),
         s.availableSeats,
-        s.bookedSeats,
+        0,
       )
     })
 
@@ -451,7 +559,7 @@ export class TourService {
                   startDate: new Date(s.startDate),
                   endDate: new Date(s.endDate),
                   availableSeats: s.availableSeats,
-                  bookedSeats: s.bookedSeats,
+                  bookedSeats: 0,
                   priceOverride: s.priceOverride,
                   status: s.status,
                 })),
@@ -540,6 +648,12 @@ export class TourService {
   async deleteTour(id: number) {
     const existing = await this.prisma.tour.findUnique({ where: { id } })
     if (!existing) throw new NotFoundException('Tour not found')
+
+    const scheduleCount = await this.prisma.tourSchedule.count({ where: { tourId: id } })
+    if (scheduleCount > 0) {
+      throw new BadRequestException('Tour đã có lịch khởi hành, không thể xóa')
+    }
+
     await this.prisma.tour.delete({ where: { id } })
     return { message: 'Tour deleted' }
   }
@@ -568,7 +682,6 @@ export class TourService {
       startDate: string
       endDate: string
       availableSeats?: number
-      bookedSeats?: number
       priceOverride?: number
       status?: string
     },
@@ -580,7 +693,7 @@ export class TourService {
       startDate,
       endDate,
       body.availableSeats,
-      body.bookedSeats,
+      0,
     )
     const s = await this.prisma.tourSchedule.create({
       data: {
@@ -588,7 +701,7 @@ export class TourService {
         startDate,
         endDate,
         availableSeats: body.availableSeats,
-        bookedSeats: body.bookedSeats,
+        bookedSeats: 0,
         priceOverride: body.priceOverride,
         status: body.status,
       },
@@ -602,6 +715,7 @@ export class TourService {
       bookedSeats: s.bookedSeats,
       priceOverride: num(s.priceOverride),
       status: s.status,
+      deletedAt: scheduleDeletedAtIso(s),
     }
   }
 
@@ -611,7 +725,6 @@ export class TourService {
       startDate: string
       endDate: string
       availableSeats: number
-      bookedSeats: number
       priceOverride: number
       status: string
     }>,
@@ -626,7 +739,8 @@ export class TourService {
       : current.startDate
     const nextEndDate = body.endDate ? new Date(body.endDate) : current.endDate
     const nextAvailableSeats = body.availableSeats ?? current.availableSeats
-    const nextBookedSeats = body.bookedSeats ?? current.bookedSeats
+    /** bookedSeats chỉ thay đổi qua luồng đặt tour, không qua API chỉnh sửa lịch */
+    const nextBookedSeats = current.bookedSeats
 
     validateSchedulePayload(
       nextStartDate,
@@ -635,15 +749,23 @@ export class TourService {
       nextBookedSeats,
     )
 
+    const reviveArchived =
+      nextEndDate >= new Date()
+        ? (() => {
+            const x = { deletedAt: null }
+            return x
+          })()
+        : {}
+
     const s = await this.prisma.tourSchedule.update({
       where: { id: scheduleId },
       data: {
         startDate: body.startDate ? nextStartDate : undefined,
         endDate: body.endDate ? nextEndDate : undefined,
         availableSeats: body.availableSeats,
-        bookedSeats: body.bookedSeats,
         priceOverride: body.priceOverride,
         status: body.status,
+        ...reviveArchived,
       },
     })
     return {
@@ -655,6 +777,7 @@ export class TourService {
       bookedSeats: s.bookedSeats,
       priceOverride: num(s.priceOverride),
       status: s.status,
+      deletedAt: scheduleDeletedAtIso(s),
     }
   }
 
@@ -663,6 +786,17 @@ export class TourService {
       where: { id: scheduleId },
     })
     if (!row) throw new NotFoundException('Schedule not found')
+
+    const passengerBookings = await this.prisma.booking.count({
+      where: {
+        tourScheduleId: scheduleId,
+        status: { not: 'CANCELLED' },
+      },
+    })
+    if (passengerBookings > 0) {
+      throw new BadRequestException('Lịch khởi hành đã có hành khách')
+    }
+
     await this.prisma.tourSchedule.delete({ where: { id: scheduleId } })
     return { message: 'Schedule removed' }
   }

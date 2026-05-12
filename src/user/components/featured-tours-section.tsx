@@ -29,7 +29,8 @@ export function FeaturedToursSection({
 
   return (
     <section
-      className="border-b border-sky-200/60 py-10 sm:py-14"
+      id="featured-tours"
+      className="scroll-mt-24 border-b border-sky-200/60 py-10 sm:scroll-mt-28 sm:py-14"
       style={{ backgroundColor: "#e0f2f7" }}
     >
       <MotionInView className="tours-reveal-wrap mx-auto max-w-6xl px-4 sm:px-6">

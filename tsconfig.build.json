@@ -6,6 +6,7 @@
     "dist",
     "**/*spec.ts",
     "src/admin",
-    "src/user"
+    "src/user",
+    "src/api/prisma.config.ts"
   ]
 }

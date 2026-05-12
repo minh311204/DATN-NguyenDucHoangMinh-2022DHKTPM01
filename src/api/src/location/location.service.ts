@@ -150,7 +150,7 @@ export class LocationService {
 
     // Location
     async getLocations() {
-        const locations = await this.prisma.location.findMany()
+        const locations = await this.prisma.location.findMany({ where: { isActive: true } })
         return locations.map((location) => ({
             id: location.id,
             provinceId: location.provinceId,

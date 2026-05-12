@@ -15,7 +15,7 @@ const AUTH_ONLY_FOOTER_PATHS = new Set([
   "/verify-email",
 ]);
 
-/** Trang đặt tour: không header site — bắt đầu từ khối Quay lại / ĐẶT TOUR */
+/** Trang đặt tour: không header site — bắt đầu từ khối Quay lại / tiêu đề đặt tour */
 function hideSiteHeader(pathname: string) {
   return pathname === "/book" || pathname.startsWith("/book/");
 }

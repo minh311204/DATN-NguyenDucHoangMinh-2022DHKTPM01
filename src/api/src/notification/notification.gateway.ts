@@ -28,6 +28,11 @@ export type NotificationRealtimePayload = {
   unreadCount: number
 }
 
+/** Đồng bộ danh sách đặt chỗ (vd. admin duyệt hủy) — payload.booking dạng list như GET /bookings/me */
+export type BookingUpdatedRealtimePayload = {
+  booking: Record<string, unknown>
+}
+
 @Injectable()
 @WebSocketGateway({
   namespace: '/notifications',
@@ -101,6 +106,14 @@ export class NotificationGateway
       this.server.to(this.userRoom(userId)).emit('notification', payload)
     } catch (e) {
       this.log.warn(`emit notification failed: ${String(e)}`)
+    }
+  }
+
+  emitBookingUpdated(userId: number, payload: BookingUpdatedRealtimePayload) {
+    try {
+      this.server.to(this.userRoom(userId)).emit('booking_updated', payload)
+    } catch (e) {
+      this.log.warn(`emit booking_updated failed: ${String(e)}`)
     }
   }
 }

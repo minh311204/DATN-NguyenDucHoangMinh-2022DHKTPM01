@@ -6,7 +6,10 @@ import {
   fetchTours,
   unwrapTourListResponse,
 } from "@/lib/server-api";
-import { parseTourListQuery } from "@/lib/tour-query";
+import {
+  inferCatalogTagIdFromTourLine,
+  parseTourListQuery,
+} from "@/lib/tour-query";
 import { errorMessage } from "@/lib/format";
 import { MotionInView } from "@/components/motion-in-view";
 import { TourDealCard } from "@/components/tour-deal-card";
@@ -43,7 +46,9 @@ export default async function ToursSearchPage({ searchParams }: Props) {
         pageSize: String(TOURS_PAGE_SIZE),
       };
 
-  const toursRes = await fetchTours(query, { next: { revalidate: 30 } });
+  const toursRes = await fetchTours(query, {
+    next: { revalidate: featuredOnly ? 60 : 30 },
+  });
   const [locationsRes, tagsRes] = featuredOnly
     ? [null, null]
     : await Promise.all([
@@ -61,6 +66,25 @@ export default async function ToursSearchPage({ searchParams }: Props) {
       ? tagsRes.data.map((t) => ({ id: t.id, name: t.name }))
       : [];
 
+  const rawTagIdSp = Array.isArray(sp.tagId) ? sp.tagId[0] : sp.tagId;
+  const rawTourLineSp = Array.isArray(sp.tourLine)
+    ? sp.tourLine[0]
+    : sp.tourLine;
+  const tagIdFromUrl =
+    rawTagIdSp != null &&
+    String(rawTagIdSp).length > 0 &&
+    /^\d+$/.test(String(rawTagIdSp))
+      ? String(Number(rawTagIdSp))
+      : undefined;
+  const initialTagId =
+    tagIdFromUrl ??
+    inferCatalogTagIdFromTourLine(
+      rawTourLineSp != null && String(rawTourLineSp).length > 0
+        ? String(rawTourLineSp)
+        : undefined,
+      tagOptions,
+    );
+
   const listError = !toursRes.ok ? errorMessage(toursRes.body) : null;
 
   if (featuredOnly) {
@@ -71,7 +95,7 @@ export default async function ToursSearchPage({ searchParams }: Props) {
       >
         <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
           <MotionInView>
-            <ToursBackButton />
+            <ToursBackButton href="/#featured-tours" />
           </MotionInView>
 
           {listError ? (
@@ -91,7 +115,7 @@ export default async function ToursSearchPage({ searchParams }: Props) {
             >
               {tours.map((t) => (
                 <div key={t.id} className="tours-stagger-item w-full max-w-[320px] sm:max-w-none">
-                  <TourDealCard tour={t} />
+                  <TourDealCard tour={t} homeFeatured />
                 </div>
               ))}
             </MotionInView>
@@ -138,9 +162,7 @@ export default async function ToursSearchPage({ searchParams }: Props) {
               initial={{
                 departureLocationId: sp.departureLocationId as string | undefined,
                 destinationLocationId: sp.destinationLocationId as string | undefined,
-                tagId: (Array.isArray(sp.tagId) ? sp.tagId[0] : sp.tagId) as
-                  | string
-                  | undefined,
+                tagId: initialTagId,
                 budget: sp.budget as string | undefined,
                 departureDate: sp.departureDate as string | undefined,
                 q: sp.q as string | undefined,

@@ -10,6 +10,9 @@ import {
   PrismaClient,
 } from '@prisma/client'
 import { PrismaService } from '../prisma/prima.service'
+import { NotificationService } from '../notification/notification.service'
+import { validateDobUtcForCategory } from '../../../shared/lib/booking-passenger-age'
+import { schedulesOverlapUtc } from '../../../shared/lib/booking-schedule-overlap'
 import {
   AdminTourSchedulesOverviewQuerySchema,
   BookingListQuerySchema,
@@ -108,76 +111,28 @@ function parseYmdUtc(ymd: string): Date {
   return dt
 }
 
-/** Tuổi đủ năm tại mốc ref (UTC) */
-function fullYearsAt(dobUtc: Date, refUtc: Date): number {
-  let age = refUtc.getUTCFullYear() - dobUtc.getUTCFullYear()
-  const md = refUtc.getUTCMonth() - dobUtc.getUTCMonth()
-  if (md < 0 || (md === 0 && refUtc.getUTCDate() < dobUtc.getUTCDate())) {
-    age--
-  }
-  return age
-}
-
-/** Số tháng tuổi tại ref (làm tròn theo ngày trong tháng) */
-function monthsOldAt(dobUtc: Date, refUtc: Date): number {
-  let months =
-    (refUtc.getUTCFullYear() - dobUtc.getUTCFullYear()) * 12 +
-    (refUtc.getUTCMonth() - dobUtc.getUTCMonth())
-  if (refUtc.getUTCDate() < dobUtc.getUTCDate()) months--
-  return months
-}
-
-type PassengerAgeCategory = 'ADULT' | 'CHILD' | 'INFANT'
-
-function assertAgeMatchesCategory(
-  category: PassengerAgeCategory,
-  dobUtc: Date,
-  tourStartUtc: Date,
-) {
-  const years = fullYearsAt(dobUtc, tourStartUtc)
-  const months = monthsOldAt(dobUtc, tourStartUtc)
-
-  if (category === 'INFANT') {
-    if (months >= 24) {
-      throw new BadRequestException(
-        'Em bé phải dưới 24 tháng tuổi tại ngày khởi hành',
-      )
-    }
-    return
-  }
-  if (category === 'CHILD') {
-    if (years < 5 || years > 11) {
-      throw new BadRequestException(
-        'Trẻ em phải từ 5 đến 11 tuổi tại ngày khởi hành',
-      )
-    }
-    return
-  }
-  if (category === 'ADULT') {
-    if (years < 12) {
-      throw new BadRequestException(
-        'Người lớn phải từ 12 tuổi trở lên tại ngày khởi hành',
-      )
-    }
-  }
-}
-
 function assertWithinCancellationWindow(
   departureUtc: Date,
   atUtc: Date,
   minDays: number,
+  messageKind: 'default' | 'approveRefund' = 'default',
 ) {
   if (minDays <= 0) return
   if (departureUtc.getTime() - atUtc.getTime() < minDays * MS_PER_DAY) {
-    throw new BadRequestException(
-      `Chỉ được thực hiện khi còn ít nhất ${minDays} ngày trước giờ khởi hành.`,
-    )
+    const msg =
+      messageKind === 'approveRefund'
+        ? `Không thể chấp nhận hủy có điều kiện hoàn tiền: tại thời điểm duyệt phải còn ít nhất ${minDays} ngày trước giờ khởi hành. Vui lòng từ chối yêu cầu hoặc xử lý thủ công nếu phù hợp.`
+        : `Chỉ được thực hiện khi còn ít nhất ${minDays} ngày trước giờ khởi hành.`
+    throw new BadRequestException(msg)
   }
 }
 
 @Injectable()
 export class BookingService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationService,
+  ) {}
 
   private async resolveBookingUserId(
     authUserId: number | null,
@@ -223,9 +178,11 @@ export class BookingService {
 
     const unitPrice = num(schedule.priceOverride) ?? num(schedule.tour.basePrice)
     const adultPrice = unitPrice
-    const childPrice = unitPrice == null ? null : unitPrice * 0.5
-    // Rule hiện tại: em bé miễn phí
-    const infantPrice = 0
+    /** Khớp UI: trẻ em / trẻ nhỏ theo ngày sinh; ~90% / ~50% giá người lớn */
+    const childPrice =
+      unitPrice == null ? null : Math.round(Number(unitPrice) * 0.9)
+    const infantPrice =
+      unitPrice == null ? null : Math.round(Number(unitPrice) * 0.5)
 
     const baseList: SchedulePayloadList = {
       id: schedule.id,
@@ -333,6 +290,7 @@ export class BookingService {
       tourScheduleId: row.tourScheduleId,
       numberOfPeople: row.numberOfPeople,
       bookingDateUtc: iso(row.bookingDateUtc),
+      expiredAtUtc: iso(row.expiredAtUtc),
       totalAmount: num(row.totalAmount),
       status: row.status,
       discountCode: row.discountCode,
@@ -391,7 +349,45 @@ export class BookingService {
     return this.mapBooking(row)
   }
 
-  async createBooking(authUserId: number | null, body: CreateBookingInput) {
+  /**
+   * Đặt cho chính mình: không cho phép hai lịch có khoảng [startDate, endDate]
+   * giao nhau khi booking đang PENDING (chưa hết hạn thanh toán) hoặc CONFIRMED.
+   */
+  private async assertNoOverlappingTourDatesForSelf(
+    userId: number,
+    newStart: Date,
+    newEnd: Date,
+    now: Date,
+  ): Promise<void> {
+    const rows = await this.prisma.booking.findMany({
+      where: {
+        userId,
+        OR: [
+          { status: 'CONFIRMED' },
+          {
+            status: 'PENDING',
+            OR: [{ expiredAtUtc: null }, { expiredAtUtc: { gt: now } }],
+          },
+        ],
+      },
+      select: {
+        id: true,
+        schedule: { select: { startDate: true, endDate: true } },
+      },
+    })
+    for (const row of rows) {
+      const s = row.schedule.startDate
+      const e = row.schedule.endDate
+      if (schedulesOverlapUtc(newStart, newEnd, s, e)) {
+        throw new BadRequestException(
+          `Bạn đang có chuyến trùng khung thời gian (BK-${row.id}). Chọn ngày khác, hoặc chọn «Đặt hộ cho người khác» nếu bạn không tham gia chuyến này.`,
+        )
+      }
+    }
+  }
+
+  async createBooking(authUserId: number | null, raw: unknown) {
+    const body = CreateBookingSchema.parse(raw)
     const userId = await this.resolveBookingUserId(authUserId, body.contact)
     const schedule = await this.prisma.tourSchedule.findUnique({
       where: { id: body.tourScheduleId },
@@ -408,6 +404,11 @@ export class BookingService {
       },
     })
     if (!schedule) throw new NotFoundException('Tour schedule not found')
+    if (schedule.deletedAt != null) {
+      throw new BadRequestException(
+        'Lịch khởi hành đã kết thúc hoặc không còn mở đặt trên hệ thống',
+      )
+    }
     if (schedule.tour.isActive !== true) {
       throw new BadRequestException(
         'Tour không mở bán hoặc đã ngừng hiển thị',
@@ -421,13 +422,32 @@ export class BookingService {
       )
     }
 
+    if (body.bookingForSelf === false && authUserId == null) {
+      throw new BadRequestException(
+        'Đặt hộ cho người khác cần đăng nhập tài khoản.',
+      )
+    }
+    if (authUserId != null && body.bookingForSelf) {
+      await this.assertNoOverlappingTourDatesForSelf(
+        authUserId,
+        schedule.startDate,
+        schedule.endDate,
+        now,
+      )
+    }
+
     const { adults, children, infants } = body.passengerCounts
     const totalPeople = adults + children + infants
     const tourStartUtc = schedule.startDate
 
     for (const p of body.passengers) {
       const dob = parseYmdUtc(p.dateOfBirth)
-      assertAgeMatchesCategory(p.ageCategory, dob, tourStartUtc)
+      const ageErr = validateDobUtcForCategory(
+        dob,
+        p.ageCategory,
+        tourStartUtc,
+      )
+      if (ageErr) throw new BadRequestException(ageErr)
     }
 
     const unitPrice =
@@ -444,7 +464,9 @@ export class BookingService {
     )
 
     const subPassengers =
-      unitPrice * adults + unitPrice * 0.5 * children + 0 * infants
+      Math.round(unitPrice * adults) +
+      Math.round(unitPrice * 0.9 * children) +
+      Math.round(unitPrice * 0.5 * infants)
     const subtotalBeforeDiscount = subPassengers + singleRoomSupplementAmount
 
     if (singleRoomCount > 0 && supplementPer <= 0) {
@@ -553,6 +575,21 @@ export class BookingService {
       return booking.id
     })
 
+    /**
+     * Tracking hành vi `book` để cụm gợi ý theo sở thích có tín hiệu booking.
+     * Đặt ngoài transaction & try/catch để không bao giờ chặn / rollback luồng
+     * đặt tour nếu insert tracking thất bại. Guest booking (userId null) bỏ qua.
+     */
+    if (userId != null) {
+      this.prisma.userBehavior
+        .create({
+          data: { userId, tourId: schedule.tour.id, action: 'book' },
+        })
+        .catch(() => {
+          // tracking phụ trợ — nuốt lỗi
+        })
+    }
+
     const row = await this.getBookingRowById(bookingId)
     return this.mapBooking(row)
   }
@@ -611,6 +648,7 @@ export class BookingService {
       row.schedule.startDate,
       new Date(),
       BOOKING_CANCEL_MIN_DAYS_BEFORE_DEPARTURE,
+      'approveRefund',
     )
 
     await this.applyStatusChange(
@@ -622,7 +660,20 @@ export class BookingService {
       { recordCancellationApproval: true },
     )
     const updated = await this.getBookingRowById(id)
-    return this.mapBooking(updated)
+    const mappedFull = this.mapBooking(updated)
+    const uid = row.userId
+    if (uid != null) {
+      const tourName = updated.schedule.tour.name
+      await this.notifications.create(uid, {
+        title: 'Đặt chỗ đã được hủy',
+        content: `Admin đã chấp nhận hủy BK-${id} (${tourName}). Đơn của bạn hiện ở trạng thái Đã hủy.`,
+      })
+      this.notifications.emitBookingUpdated(
+        uid,
+        this.mapBooking(updated, 'list') as unknown as Record<string, unknown>,
+      )
+    }
+    return mappedFull
   }
 
   async rejectBookingCancellation(id: number, raw: unknown) {
@@ -643,7 +694,20 @@ export class BookingService {
       },
       include: bookingInclude,
     })
-    return this.mapBooking(updated)
+    const mappedFull = this.mapBooking(updated)
+    const uid = row.userId
+    if (uid != null) {
+      const tourName = updated.schedule.tour.name
+      await this.notifications.create(uid, {
+        title: 'Yêu cầu hủy không được chấp nhận',
+        content: `Admin đã từ chối yêu cầu hủy BK-${id} (${tourName}). Đặt chỗ của bạn giữ nguyên.`,
+      })
+      this.notifications.emitBookingUpdated(
+        uid,
+        this.mapBooking(updated, 'list') as unknown as Record<string, unknown>,
+      )
+    }
+    return mappedFull
   }
 
   async getBookings(query: BookingListQuery) {
@@ -768,8 +832,8 @@ export class BookingService {
               : Math.max(s.availableSeats - (s.bookedSeats ?? 0), 0),
           priceOverride: num(s.priceOverride),
           adultPrice: unitPrice,
-          childPrice: unitPrice == null ? null : unitPrice * 0.5,
-          infantPrice: 0,
+          childPrice: unitPrice == null ? null : Math.round(Number(unitPrice) * 0.9),
+          infantPrice: unitPrice == null ? null : Math.round(Number(unitPrice) * 0.5),
           bookingCount: countMap.get(s.id) ?? 0,
         }
       }),

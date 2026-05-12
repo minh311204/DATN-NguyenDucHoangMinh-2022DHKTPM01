@@ -20,6 +20,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:ai:db": "jest api/src/ai/ai.service.db.integration.spec.ts",
     "db:seed": "prisma db seed --config src/api/prisma.config.ts",
+    "db:migrate": "prisma migrate deploy --config src/api/prisma.config.ts",
     "dev:admin": "npm run dev --prefix src/admin",
     "dev:user": "npm run dev --prefix src/user",
     "dev:api": "nest start --watch",

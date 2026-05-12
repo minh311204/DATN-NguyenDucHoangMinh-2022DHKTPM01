@@ -7,6 +7,7 @@ import { HomeAboutSnapshotSection } from "@/components/home-about-snapshot-secti
 import { FeaturedToursSection } from "@/components/featured-tours-section";
 import { HomeFeaturesSection } from "@/components/home-features-section";
 import { fetchTours, unwrapTourListResponse } from "@/lib/server-api";
+import { FEATURED_TOURS_QUERY } from "@/lib/tour-query";
 import { errorMessage } from "@/lib/format";
 
 /** Nền hero — ảnh cover, overlay đen nhẹ */
@@ -14,10 +15,9 @@ const HERO_BG =
   "/assets/images/header/video_bg_vietravel.ca0484d0.jpeg";
 
 export default async function HomePage() {
-  const res = await fetchTours(
-    { isActive: "true", featured: "true" },
-    { next: { revalidate: 60 } },
-  );
+  const res = await fetchTours(FEATURED_TOURS_QUERY, {
+    next: { revalidate: 60 },
+  });
 
   const featured = res.ok
     ? unwrapTourListResponse(res.data).tours.slice(0, 6)
@@ -32,11 +32,6 @@ export default async function HomePage() {
         kicker={
           <p className="motion-fade-in-up text-sm font-semibold uppercase tracking-[0.25em] text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.85)] sm:text-base">
             Đặt tour trực tuyến
-          </p>
-        }
-        subline={
-          <p className="text-pretty text-sm font-normal text-white/95 [text-shadow:0_1px_8px_rgba(0,0,0,0.45)] sm:text-base">
-            Giá tốt – hỗ trợ 24/7 – khắp mọi miền
           </p>
         }
         search={<HeroSearchBar className="w-full" />}

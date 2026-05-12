@@ -8,6 +8,7 @@ import type {
   CreateTourInput,
   CreateTourItineraryInput,
   CreateTourScheduleInput,
+  CreateTourTransportInput,
   LocationRow,
   Supplier,
   TourAccommodation,
@@ -16,6 +17,7 @@ import type {
   TourItinerary,
   TourMeal,
   TourSchedule,
+  TourTagRow,
   TourTransport,
   TourLine,
   TransportType,
@@ -32,12 +34,14 @@ import {
   addTourTransport,
   createTour,
   fetchSuppliers,
+  fetchTourTags,
   removeItineraryAccommodation,
   removeItineraryMeal,
   removeTourImage,
   removeTourItinerary,
   removeTourSchedule,
   removeTourTransport,
+  setTourTags,
   updateItineraryAccommodation,
   updateItineraryMeal,
   updateTourItinerary,
@@ -57,7 +61,6 @@ type Fields = {
   destinationLocationId: string;
   durationDays: string;
   basePrice: string;
-  maxPeople: string;
   thumbnailUrl: string;
   tourLine: string;
   transportType: string;
@@ -118,11 +121,28 @@ const MEAL_TYPE_LABELS: Record<MealType, string> = {
   SNACK: "Ăn vặt/Snack",
 };
 
+/** Khớp TourScheduleStatusSchema — hiển thị trên form */
+const TOUR_SCHEDULE_STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: "OPEN", label: "Mở bán" },
+  { value: "ACTIVE", label: "Đang chạy" },
+  { value: "FULL", label: "Hết chỗ" },
+  { value: "CANCELLED", label: "Đã hủy (ẩn trên site)" },
+];
+
+/** Lưới 2 nút (Lưu | + Thêm …) — cùng kích thước mọi section (lịch / lịch trình / chặng) */
+const SECTION_HEADER_ACTIONS_GRID =
+  "grid w-max max-w-full shrink-0 grid-cols-[7.25rem_12rem] gap-1.5";
+
+function labelScheduleStatus(s: string | null | undefined) {
+  if (!s) return "—";
+  const o = TOUR_SCHEDULE_STATUS_OPTIONS.find((x) => x.value === s);
+  return o?.label ?? s;
+}
+
 type ScheduleDraft = {
   startDate: string; // datetime-local
   endDate: string; // datetime-local
   availableSeats: string;
-  bookedSeats: string;
   priceOverride: string;
   status: string;
 };
@@ -133,31 +153,8 @@ type ItineraryDraft = {
   description: string;
 };
 
-function isEmptyScheduleDraft(d: ScheduleDraft) {
-  return (
-    !d.startDate &&
-    !d.endDate &&
-    !d.availableSeats &&
-    !d.bookedSeats &&
-    !d.priceOverride &&
-    !d.status
-  );
-}
-
 function isEmptyItineraryDraft(d: ItineraryDraft) {
   return !d.dayNumber && !d.title && !d.description;
-}
-
-function parseOptionalNumberInt(
-  raw: string,
-): { ok: true; value?: number } | { ok: false; error: string } {
-  const t = raw.trim();
-  if (!t) return { ok: true, value: undefined };
-  const n = Number(t);
-  if (!Number.isFinite(n) || Math.floor(n) !== n) {
-    return { ok: false, error: "Giá trị phải là số nguyên." };
-  }
-  return { ok: true, value: n };
 }
 
 function parseOptionalNumberFloat(
@@ -170,6 +167,253 @@ function parseOptionalNumberFloat(
     return { ok: false, error: "Giá trị không hợp lệ." };
   }
   return { ok: true, value: n };
+}
+
+/** Số chỗ trên lịch — bắt buộc khi đã nhập thông tin lịch */
+function parseRequiredPositiveInt(
+  raw: string,
+): { ok: true; value: number } | { ok: false; error: string } {
+  const t = raw.trim();
+  if (!t) {
+    return { ok: false, error: "Nhập số chỗ" };
+  }
+  const n = Number(t);
+  if (!Number.isFinite(n) || Math.floor(n) !== n) {
+    return { ok: false, error: "Số chỗ phải là số nguyên." };
+  }
+  if (n < 1) {
+    return { ok: false, error: "Số chỗ phải ≥ 1." };
+  }
+  return { ok: true, value: n };
+}
+
+type TourFormFieldErrorKey =
+  | "name"
+  | "slug"
+  | "departureLocationId"
+  | "destinationLocationId"
+  | "durationDays"
+  | "basePrice"
+  | "thumbnailUrl"
+  | "description"
+  | "inclusions"
+  | "exclusions"
+  | "cancellationPolicy";
+
+type ScheduleFieldErrorKey =
+  | "startDate"
+  | "endDate"
+  | "availableSeats"
+  | "priceOverride"
+  | "status"
+  | "_row";
+
+function ringError(active: boolean) {
+  return active
+    ? "border-red-500 ring-2 ring-red-200 focus:border-red-500 focus:ring-red-200"
+    : "border-slate-200 focus:border-slate-200 focus:ring-0";
+}
+
+function InlineFieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return <p className="mt-1 text-xs font-medium text-red-700">{message}</p>;
+}
+
+/** Validate ngay khi gõ — Số ngày */
+function tourDurationDaysInlineError(raw: string): string | undefined {
+  const t = raw.trim();
+  if (!t) return undefined;
+  const d = Number(t);
+  if (!Number.isFinite(d) || Math.floor(d) !== d || d < 1) {
+    return "Số ngày >= 1";
+  }
+  return undefined;
+}
+
+/** Validate ngay khi gõ — Giá cơ bản: số hợp lệ và > 0 */
+function tourBasePriceInlineError(raw: string): string | undefined {
+  const t = raw.trim();
+  if (!t) return undefined;
+  const p = Number(t);
+  if (!Number.isFinite(p)) {
+    return "Nhập số hợp lệ.";
+  }
+  if (p <= 0) {
+    return "Giá cơ bản phải lớn hơn 0.";
+  }
+  return undefined;
+}
+
+/** Lỗi từng ô form tour — dùng cho hiển thị inline */
+function collectTourFieldErrors(
+  fields: Fields,
+  dep: number,
+  dest: number,
+  opts?: { requireBasePrice?: boolean },
+): Partial<Record<TourFormFieldErrorKey, string>> {
+  const e: Partial<Record<TourFormFieldErrorKey, string>> = {};
+  if (!fields.name.trim()) {
+    e.name = "Nhập tên tour.";
+  }
+  if (!dep || Number.isNaN(dep)) {
+    e.departureLocationId = "Chọn điểm khởi hành.";
+  }
+  if (!dest || Number.isNaN(dest)) {
+    e.destinationLocationId = "Chọn điểm đến.";
+  }
+  if (dep && dest && dep === dest) {
+    e.destinationLocationId = "Điểm đến phải khác điểm khởi hành.";
+  }
+
+  const slug = fields.slug.trim();
+  if (slug && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(slug)) {
+    e.slug = "Chỉ dùng chữ, số và dấu gạch ngang (vd: tour-mien-tay).";
+  } else if (slug.length > 120) {
+    e.slug = "Tối đa 120 ký tự.";
+  }
+
+  const thumb = fields.thumbnailUrl.trim();
+  if (thumb) {
+    try {
+      void new URL(thumb);
+    } catch {
+      e.thumbnailUrl = "URL không hợp lệ.";
+    }
+  }
+
+  if (fields.durationDays.trim()) {
+    const msg = tourDurationDaysInlineError(fields.durationDays);
+    if (msg) e.durationDays = "Nhập số ngày(phải lớn hơn 0)";
+  }
+
+  const bp = fields.basePrice.trim();
+  if (opts?.requireBasePrice && !bp) {
+    e.basePrice = "Nhập giá cơ bản (phải lớn hơn 0).";
+  } else if (bp) {
+    const msg = tourBasePriceInlineError(bp);
+    if (msg) e.basePrice = msg;
+  }
+
+  if (fields.description.trim().length > 50_000) {
+    e.description = "Tối đa 50.000 ký tự.";
+  }
+  if (fields.inclusions.trim().length > 20_000) {
+    e.inclusions = "Tối đa 20.000 ký tự.";
+  }
+  if (fields.exclusions.trim().length > 20_000) {
+    e.exclusions = "Tối đa 20.000 ký tự.";
+  }
+  if (fields.cancellationPolicy.trim().length > 20_000) {
+    e.cancellationPolicy = "Tối đa 20.000 ký tự.";
+  }
+
+  return e;
+}
+
+function scheduleStatusMeaningful(d: ScheduleDraft) {
+  return d.status && d.status !== "OPEN";
+}
+
+function isEmptyScheduleDraft(d: ScheduleDraft) {
+  return (
+    !d.startDate &&
+    !d.endDate &&
+    !d.availableSeats &&
+    !d.priceOverride &&
+    !scheduleStatusMeaningful(d)
+  );
+}
+
+/** Giá trị `min` cho input datetime-local — chặn chọn thời điểm trước hiện tại (theo giờ máy). */
+function datetimeLocalMinNow(): string {
+  const d = new Date();
+  d.setSeconds(0, 0);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}`;
+}
+
+/** `min` cho ô kết thúc: không trước hiện tại và không trước giờ bắt đầu (chuỗi datetime-local so sánh từ điển). */
+function scheduleDraftEndDatetimeLocalMin(startVal: string): string {
+  const now = datetimeLocalMinNow();
+  const s = startVal.trim();
+  if (!s) return now;
+  return s.localeCompare(now) > 0 ? s : now;
+}
+
+/** Lỗi từng ô một dòng lịch — bỏ qua khi dòng đang trống */
+function getScheduleRowFieldErrors(
+  d: ScheduleDraft,
+  opts?: { forbidPastDates?: boolean },
+): Partial<Record<ScheduleFieldErrorKey, string>> {
+  const e: Partial<Record<ScheduleFieldErrorKey, string>> = {};
+  if (isEmptyScheduleDraft(d)) return e;
+
+  if (!d.startDate.trim()) {
+    e.startDate = "Chọn ngày giờ bắt đầu.";
+  }
+  if (!d.endDate.trim()) {
+    e.endDate = "Chọn ngày giờ kết thúc.";
+  }
+
+  let startOk = false;
+  let endOk = false;
+  let startTs = 0;
+  let endTs = 0;
+  if (d.startDate) {
+    const start = new Date(d.startDate);
+    if (!Number.isFinite(start.getTime())) {
+      e.startDate = "Thời điểm không hợp lệ.";
+    } else {
+      startOk = true;
+      startTs = start.getTime();
+    }
+  }
+  if (d.endDate) {
+    const end = new Date(d.endDate);
+    if (!Number.isFinite(end.getTime())) {
+      e.endDate = "Thời điểm không hợp lệ.";
+    } else {
+      endOk = true;
+      endTs = end.getTime();
+    }
+  }
+  if (startOk && endOk && endTs <= startTs) {
+    e.endDate = "Phải sau thời điểm bắt đầu.";
+  }
+
+  if (opts?.forbidPastDates) {
+    const now = Date.now();
+    if (startOk && startTs < now) {
+      e.startDate = "Không được chọn ngày đã qua.";
+    }
+    if (endOk && endTs < now && !e.endDate) {
+      e.endDate = "Không được chọn ngày đã qua.";
+    }
+  }
+
+  const seats = parseRequiredPositiveInt(d.availableSeats);
+  if (!seats.ok) {
+    e.availableSeats = seats.error;
+  }
+
+  const p = parseOptionalNumberFloat(d.priceOverride);
+  if (!p.ok) {
+    e.priceOverride = p.error;
+  } else if (p.value != null && p.value < 0) {
+    e.priceOverride = "Không được âm.";
+  }
+
+  if (
+    d.status &&
+    !TOUR_SCHEDULE_STATUS_OPTIONS.some((o) => o.value === d.status) &&
+    d.status.length > 64
+  ) {
+    e.status = "Giá trị không hợp lệ.";
+  }
+
+  return e;
 }
 
 function isoToDatetimeLocal(iso: string | null | undefined): string {
@@ -197,7 +441,6 @@ function buildInitialFields(
       destinationLocationId: l1,
       durationDays: "",
       basePrice: "",
-      maxPeople: "",
       thumbnailUrl: "",
       tourLine: "STANDARD",
       transportType: "BUS",
@@ -217,7 +460,6 @@ function buildInitialFields(
     durationDays:
       initial.durationDays != null ? String(initial.durationDays) : "",
     basePrice: initial.basePrice != null ? String(initial.basePrice) : "",
-    maxPeople: initial.maxPeople != null ? String(initial.maxPeople) : "",
     thumbnailUrl: initial.thumbnailUrl ?? "",
     tourLine: initial.tourLine ?? "STANDARD",
     transportType: initial.transportType ?? "BUS",
@@ -240,6 +482,22 @@ function emptyTransportDraft(legOrder = 1): TransportDraft {
     arrivalPoint: "",
     estimatedHours: "",
     notes: "",
+  };
+}
+
+function transportDraftToCreateBody(
+  d: TransportDraft,
+): CreateTourTransportInput {
+  return {
+    supplierId: d.supplierId ? Number(d.supplierId) : undefined,
+    legOrder: Number(d.legOrder) || 1,
+    vehicleType: d.vehicleType,
+    vehicleDetail: d.vehicleDetail.trim() || undefined,
+    seatClass: d.seatClass.trim() || undefined,
+    departurePoint: d.departurePoint.trim(),
+    arrivalPoint: d.arrivalPoint.trim(),
+    estimatedHours: d.estimatedHours ? Number(d.estimatedHours) : undefined,
+    notes: d.notes.trim() || undefined,
   };
 }
 
@@ -287,12 +545,33 @@ export function TourForm({
     buildInitialFields(initialDetail, locations),
   );
   const [err, setErr] = useState<string | null>(null);
+  const [tourFieldErrors, setTourFieldErrors] = useState<
+    Partial<Record<TourFormFieldErrorKey, string>>
+  >({});
+  const [scheduleDraftFieldErrors, setScheduleDraftFieldErrors] = useState<
+    Record<number, Partial<Record<ScheduleFieldErrorKey, string>>>
+  >({});
+  const [scheduleModalFieldErrors, setScheduleModalFieldErrors] = useState<
+    Partial<Record<ScheduleFieldErrorKey, string>>
+  >({});
+  /** Lỗi section "Lịch khởi hành tạo mới" — hiện trong section (VD: chưa có lịch hợp lệ) */
+  const [scheduleNewSectionErr, setScheduleNewSectionErr] = useState<string | null>(null);
+  /** Lỗi từng ô "Số ngày" trong block Lịch trình tạo mới */
+  const [itineraryDraftDayErrors, setItineraryDraftDayErrors] = useState<Record<number, string>>({});
+  /** Lỗi section "Lịch trình tạo mới" */
+  const [itineraryNewSectionErr, setItineraryNewSectionErr] = useState<string | null>(null);
+  /** Lỗi ô "Day number" trong modal sửa lịch trình */
+  const [itineraryModalDayErr, setItineraryModalDayErr] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [scheduleDrafts, setScheduleDrafts] = useState<ScheduleDraft[]>([]);
   const [itineraryDrafts, setItineraryDrafts] = useState<ItineraryDraft[]>([]);
   const [mutating, setMutating] = useState(false);
   const [savingNewSchedules, setSavingNewSchedules] = useState(false);
   const [savingNewItineraries, setSavingNewItineraries] = useState(false);
+  const [savingNewTransports, setSavingNewTransports] = useState(false);
+  const [transportNewSectionErr, setTransportNewSectionErr] = useState<
+    string | null
+  >(null);
 
   const thumbInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -316,9 +595,8 @@ export function TourForm({
     startDate: "",
     endDate: "",
     availableSeats: "",
-    bookedSeats: "",
     priceOverride: "",
-    status: "",
+    status: "OPEN",
   });
 
   const [editingItineraryId, setEditingItineraryId] = useState<number | null>(
@@ -341,8 +619,22 @@ export function TourForm({
   const [addingMealForItinerary, setAddingMealForItinerary] = useState<number | null>(null);
   const [mealDraft, setMealDraft] = useState<MealDraft>(emptyMealDraft());
 
+  // Tags
+  const [allTags, setAllTags] = useState<TourTagRow[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>(
+    () => initialDetail?.tags?.map((t) => t.id) ?? [],
+  );
+
   useEffect(() => {
     setFields(buildInitialFields(initialDetail, locations));
+    setTourFieldErrors({});
+    setScheduleDraftFieldErrors({});
+    setScheduleModalFieldErrors({});
+    setScheduleNewSectionErr(null);
+    setItineraryDraftDayErrors({});
+    setItineraryNewSectionErr(null);
+    setItineraryModalDayErr(undefined);
+    setTransportNewSectionErr(null);
     setScheduleDrafts([]);
     setItineraryDrafts([]);
     setLocalSchedules(initialDetail?.schedules ?? []);
@@ -350,24 +642,103 @@ export function TourForm({
     setLocalTransports(initialDetail?.transports ?? []);
     setLocalImages(initialDetail?.images ?? []);
     setPendingGallery([]);
+    setSelectedTagIds(initialDetail?.tags?.map((t) => t.id) ?? []);
     setTransportDrafts([]);
     setEditingScheduleId(null);
     setEditingItineraryId(null);
     setEditingTransportId(null);
   }, [initialDetail, locations]);
 
-  // Load suppliers once in edit mode
+  // Load danh sách tags (cả create lẫn edit)
   useEffect(() => {
-    if (mode !== "edit") return;
+    fetchTourTags().then((res) => {
+      if (res.ok) setAllTags(res.data);
+    });
+  }, []);
+
+  // Load suppliers (chọn đơn vị vận chuyển khi tạo / sửa tour)
+  useEffect(() => {
     fetchSuppliers().then((res) => {
       if (!res.ok) return;
       const d = res.data;
       setSuppliers(Array.isArray(d) ? d : d.items);
     });
-  }, [mode]);
+  }, []);
 
   function set<K extends keyof Fields>(key: K, value: Fields[K]) {
     setFields((f) => ({ ...f, [key]: value }));
+    setTourFieldErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete (next as Partial<Record<string, string>>)[key as string];
+      return next;
+    });
+  }
+
+  function closeScheduleEditModal() {
+    setEditingScheduleId(null);
+    setScheduleModalFieldErrors({});
+  }
+
+  /** Xóa lỗi inline một ô trong block “lịch tạo mới” #draftIndex */
+  function clearScheduleDraftCell(
+    draftIndex: number,
+    cell: ScheduleFieldErrorKey,
+  ) {
+    if (cell === "_row") return;
+    setScheduleDraftFieldErrors((prev) => {
+      const row = prev[draftIndex];
+      if (!row?.[cell]) return prev;
+      const updated = { ...row };
+      delete updated[cell];
+      if (Object.keys(updated).length === 0) {
+        const rest = { ...prev };
+        delete rest[draftIndex];
+        return rest;
+      }
+      return { ...prev, [draftIndex]: updated };
+    });
+  }
+
+  function patchScheduleDraft(
+    draftIndex: number,
+    patch: Partial<ScheduleDraft>,
+    touched?: ScheduleFieldErrorKey,
+  ) {
+    if (touched === "startDate" || touched === "endDate") {
+      setScheduleDrafts((prev) => {
+        const nextRow = { ...prev[draftIndex], ...patch };
+        const fe = getScheduleRowFieldErrors(nextRow, {
+          forbidPastDates: true,
+        });
+        setScheduleDraftFieldErrors((ePrev) => {
+          const out = { ...ePrev };
+          if (Object.keys(fe).length === 0) {
+            delete out[draftIndex];
+          } else {
+            out[draftIndex] = fe;
+          }
+          return out;
+        });
+        return prev.map((row, i) =>
+          i === draftIndex ? nextRow : row,
+        );
+      });
+      return;
+    }
+    setScheduleDrafts((prev) =>
+      prev.map((row, i) => (i === draftIndex ? { ...row, ...patch } : row)),
+    );
+    if (touched) clearScheduleDraftCell(draftIndex, touched);
+  }
+
+  function clearScheduleModalCell(cell: ScheduleFieldErrorKey) {
+    setScheduleModalFieldErrors((prev) => {
+      if (!prev[cell]) return prev;
+      const next = { ...prev };
+      delete next[cell];
+      return next;
+    });
   }
 
   async function onThumbFile(file: File | undefined) {
@@ -434,73 +805,93 @@ export function TourForm({
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
+    setTourFieldErrors({});
+    setScheduleDraftFieldErrors({});
+    setItineraryDraftDayErrors({});
+
     const dep = Number(fields.departureLocationId);
     const dest = Number(fields.destinationLocationId);
-    if (!fields.name.trim()) {
-      setErr("Nhập tên tour.");
+
+    const tourFe = collectTourFieldErrors(fields, dep, dest, {
+      requireBasePrice: mode === "create",
+    });
+    if (Object.keys(tourFe).length > 0) {
+      setTourFieldErrors(tourFe);
       return;
     }
-    if (!dep || !dest) {
-      setErr("Chọn đủ điểm khởi hành và điểm đến.");
+
+    const draftFe: Record<
+      number,
+      Partial<Record<ScheduleFieldErrorKey, string>>
+    > = {};
+    for (let i = 0; i < scheduleDrafts.length; i++) {
+      const fe = getScheduleRowFieldErrors(scheduleDrafts[i], {
+        forbidPastDates: true,
+      });
+      if (Object.keys(fe).length > 0) {
+        draftFe[i] = fe;
+      }
+    }
+    if (Object.keys(draftFe).length > 0) {
+      setScheduleDraftFieldErrors(draftFe);
       return;
     }
 
     const schedulesToCreate: CreateTourScheduleInput[] = [];
-    for (const d of scheduleDrafts) {
+    for (let i = 0; i < scheduleDrafts.length; i++) {
+      const d = scheduleDrafts[i];
       if (isEmptyScheduleDraft(d)) continue;
-      if (!d.startDate || !d.endDate) {
-        setErr("Lịch khởi hành: cần chọn cả ngày bắt đầu và ngày kết thúc.");
-        return;
-      }
       const start = new Date(d.startDate);
       const end = new Date(d.endDate);
-      if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
-        setErr("Lịch khởi hành: ngày không hợp lệ.");
-        return;
-      }
-
-      const a = parseOptionalNumberInt(d.availableSeats);
-      if (!a.ok) {
-        setErr(`Lịch khởi hành: availableSeats - ${a.error}`);
-        return;
-      }
-      const b = parseOptionalNumberInt(d.bookedSeats);
-      if (!b.ok) {
-        setErr(`Lịch khởi hành: bookedSeats - ${b.error}`);
-        return;
-      }
+      const seats = parseRequiredPositiveInt(d.availableSeats);
       const p = parseOptionalNumberFloat(d.priceOverride);
-      if (!p.ok) {
-        setErr(`Lịch khởi hành: priceOverride - ${p.error}`);
-        return;
-      }
-
-      const status = d.status.trim() || undefined;
+      if (!seats.ok || !p.ok) return;
+      const st = (d.status.trim() || "OPEN") as
+        | "OPEN"
+        | "ACTIVE"
+        | "FULL"
+        | "CANCELLED";
       schedulesToCreate.push({
         startDate: start.toISOString(),
         endDate: end.toISOString(),
-        availableSeats: a.value,
-        bookedSeats: b.value,
+        availableSeats: seats.value,
         priceOverride: p.value,
-        status,
+        status: st,
       });
     }
 
     const itinerariesToCreate: CreateTourItineraryInput[] = [];
-    for (const it of itineraryDrafts) {
+    const itDayErrors: Record<number, string> = {};
+    for (let i = 0; i < itineraryDrafts.length; i++) {
+      const it = itineraryDrafts[i];
       if (isEmptyItineraryDraft(it)) continue;
       const day = Number(it.dayNumber);
       if (!Number.isFinite(day) || Math.floor(day) !== day || day < 1) {
-        setErr("Lịch trình: dayNumber phải là số nguyên >= 1.");
-        return;
+        itDayErrors[i] = "Số nguyên ≥ 1.";
+      } else {
+        itinerariesToCreate.push({
+          dayNumber: day,
+          title: it.title.trim() || undefined,
+          description: it.description.trim() || undefined,
+        });
       }
-      const title = it.title.trim() || undefined;
-      const description = it.description.trim() || undefined;
-      itinerariesToCreate.push({
-        dayNumber: day,
-        title,
-        description,
-      });
+    }
+    if (Object.keys(itDayErrors).length > 0) {
+      setItineraryDraftDayErrors(itDayErrors);
+      return;
+    }
+
+    setTransportNewSectionErr(null);
+    if (transportDrafts.length > 0) {
+      for (let i = 0; i < transportDrafts.length; i++) {
+        const d = transportDrafts[i];
+        if (!d.departurePoint.trim() || !d.arrivalPoint.trim()) {
+          setTransportNewSectionErr(
+            `Chặng #${i + 1}: nhập điểm xuất phát và điểm đến.`,
+          );
+          return;
+        }
+      }
     }
 
     setSaving(true);
@@ -516,7 +907,6 @@ export function TourForm({
             ? Number(fields.durationDays)
             : undefined,
           basePrice: fields.basePrice ? Number(fields.basePrice) : undefined,
-          maxPeople: fields.maxPeople ? Number(fields.maxPeople) : undefined,
           thumbnailUrl: fields.thumbnailUrl.trim() || undefined,
           tourLine: fields.tourLine as TourLine,
           transportType: fields.transportType as TransportType,
@@ -535,6 +925,20 @@ export function TourForm({
         if (!res.ok) {
           setErr(errorMessage(res.body, res.status));
           return;
+        }
+        for (const d of transportDrafts) {
+          const tr = await addTourTransport(
+            res.data.id,
+            transportDraftToCreateBody(d),
+          );
+          if (!tr.ok) {
+            setErr(errorMessage(tr.body, tr.status));
+            return;
+          }
+        }
+        // Gán nhãn sau khi tạo tour thành công
+        if (selectedTagIds.length > 0) {
+          await setTourTags(res.data.id, selectedTagIds);
         }
         if (onSavedToList) {
           onSavedToList();
@@ -556,7 +960,6 @@ export function TourForm({
           ? Number(fields.durationDays)
           : null,
         basePrice: fields.basePrice ? Number(fields.basePrice) : null,
-        maxPeople: fields.maxPeople ? Number(fields.maxPeople) : null,
         thumbnailUrl: fields.thumbnailUrl.trim() || null,
         tourLine: fields.tourLine as TourLine | null,
         transportType: fields.transportType as TransportType | null,
@@ -569,6 +972,13 @@ export function TourForm({
       const res = await updateTour(tourId, body);
       if (!res.ok) {
         setErr(errorMessage(res.body, res.status));
+        return;
+      }
+
+      // Cập nhật nhãn tour
+      const tagRes = await setTourTags(tourId, selectedTagIds);
+      if (!tagRes.ok) {
+        setErr(errorMessage(tagRes.body, tagRes.status));
         return;
       }
 
@@ -588,6 +998,15 @@ export function TourForm({
           return;
         }
       }
+      for (const d of transportDrafts) {
+        const r = await addTourTransport(tourId, transportDraftToCreateBody(d));
+        if (!r.ok) {
+          setErr(errorMessage(r.body, r.status));
+          return;
+        }
+        setLocalTransports((prev) => [...prev, r.data]);
+      }
+      setTransportDrafts([]);
 
       if (onSavedToList) {
         onSavedToList();
@@ -601,15 +1020,19 @@ export function TourForm({
   }
 
   function beginEditSchedule(s: TourSchedule) {
+    setScheduleModalFieldErrors({});
     setEditingScheduleId(s.id);
+    const st = s.status?.trim() ?? "";
+    const statusVal = TOUR_SCHEDULE_STATUS_OPTIONS.some((o) => o.value === st)
+      ? st
+      : st || "OPEN";
     setScheduleEditDraft({
       startDate: isoToDatetimeLocal(s.startDate),
       endDate: isoToDatetimeLocal(s.endDate),
       availableSeats: s.availableSeats != null ? String(s.availableSeats) : "",
-      bookedSeats: s.bookedSeats != null ? String(s.bookedSeats) : "",
       priceOverride:
         s.priceOverride != null ? String(s.priceOverride) : "",
-      status: s.status ?? "",
+      status: statusVal,
     });
   }
 
@@ -624,43 +1047,49 @@ export function TourForm({
 
   async function handleUpdateSchedule(scheduleId: number) {
     if (mutating) return;
-    if (!scheduleEditDraft.startDate || !scheduleEditDraft.endDate) {
-      setErr("Lịch khởi hành: cần chọn cả ngày bắt đầu và kết thúc.");
+    setErr(null);
+
+    if (isEmptyScheduleDraft(scheduleEditDraft)) {
+      setScheduleModalFieldErrors({
+        _row: "Điền đủ thông tin lịch khởi hành.",
+      });
+      return;
+    }
+
+    const fe: Partial<Record<ScheduleFieldErrorKey, string>> = {
+      ...getScheduleRowFieldErrors(scheduleEditDraft),
+    };
+    const seats = parseRequiredPositiveInt(scheduleEditDraft.availableSeats);
+    const p = parseOptionalNumberFloat(scheduleEditDraft.priceOverride);
+    const current = localSchedules.find((x) => x.id === scheduleId);
+    const booked = current?.bookedSeats ?? 0;
+    if (seats.ok && seats.value < booked) {
+      fe.availableSeats = `Không được nhỏ hơn số đã đặt (${booked}).`;
+    }
+
+    if (Object.keys(fe).length > 0) {
+      setScheduleModalFieldErrors(fe);
+      return;
+    }
+
+    if (!seats.ok || !p.ok) {
       return;
     }
 
     const start = new Date(scheduleEditDraft.startDate);
     const end = new Date(scheduleEditDraft.endDate);
-    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
-      setErr("Lịch khởi hành: ngày không hợp lệ.");
-      return;
-    }
 
-    setErr(null);
     setMutating(true);
     try {
-      const a = parseOptionalNumberInt(scheduleEditDraft.availableSeats);
-      if (!a.ok) {
-        setErr(`Lịch khởi hành: availableSeats - ${a.error}`);
-        return;
-      }
-      const b = parseOptionalNumberInt(scheduleEditDraft.bookedSeats);
-      if (!b.ok) {
-        setErr(`Lịch khởi hành: bookedSeats - ${b.error}`);
-        return;
-      }
-      const p = parseOptionalNumberFloat(scheduleEditDraft.priceOverride);
-      if (!p.ok) {
-        setErr(`Lịch khởi hành: priceOverride - ${p.error}`);
-        return;
-      }
+      const status =
+        scheduleEditDraft.status.trim().length > 0
+          ? scheduleEditDraft.status.trim()
+          : "OPEN";
 
-      const status = scheduleEditDraft.status.trim() || undefined;
       const body = {
         startDate: start.toISOString(),
         endDate: end.toISOString(),
-        availableSeats: a.value,
-        bookedSeats: b.value,
+        availableSeats: seats.value,
         priceOverride: p.value,
         status,
       };
@@ -674,7 +1103,7 @@ export function TourForm({
       setLocalSchedules((prev) =>
         prev.map((x) => (x.id === scheduleId ? res.data : x)),
       );
-      setEditingScheduleId(null);
+      closeScheduleEditModal();
     } finally {
       setMutating(false);
     }
@@ -682,11 +1111,13 @@ export function TourForm({
 
   async function handleDeleteSchedule(scheduleId: number) {
     if (mutating) return;
-    if (
-      !window.confirm(
-        "Xóa lịch khởi hành này? Hành động này không thể hoàn tác.",
-      )
-    ) {
+    const row = localSchedules.find((x) => x.id === scheduleId);
+    const booked = row?.bookedSeats ?? 0;
+    const msg =
+      booked > 0
+        ? `Lịch này ghi nhận ${booked} chỗ đã đặt (theo dữ liệu lịch). Nếu đã có booking trên hệ thống, việc xóa sẽ bị từ chối cho đến khi không còn booking.\n\nBạn vẫn muốn thử xóa?`
+        : "Xóa lịch khởi hành này? Hành động này không thể hoàn tác.";
+    if (!window.confirm(msg)) {
       return;
     }
 
@@ -699,7 +1130,7 @@ export function TourForm({
         return;
       }
       setLocalSchedules((prev) => prev.filter((x) => x.id !== scheduleId));
-      if (editingScheduleId === scheduleId) setEditingScheduleId(null);
+      if (editingScheduleId === scheduleId) closeScheduleEditModal();
     } finally {
       setMutating(false);
     }
@@ -709,11 +1140,10 @@ export function TourForm({
     if (mutating) return;
     const day = Number(itineraryEditDraft.dayNumber);
     if (!Number.isFinite(day) || Math.floor(day) !== day || day < 1) {
-      setErr("Lịch trình: dayNumber phải là số nguyên >= 1.");
+      setItineraryModalDayErr("Số ngày phải là số nguyên ≥ 1.");
       return;
     }
-
-    setErr(null);
+    setItineraryModalDayErr(undefined);
     setMutating(true);
     try {
       const title = itineraryEditDraft.title.trim() || undefined;
@@ -766,31 +1196,45 @@ export function TourForm({
 
   // ---------- Transport handlers ----------
 
-  async function handleAddTransport(draft: TransportDraft) {
-    if (tourId == null || mutating) return;
-    if (!draft.departurePoint.trim() || !draft.arrivalPoint.trim()) {
-      setErr("Vận chuyển: cần nhập điểm xuất phát và điểm đến.");
+  async function saveNewTransportsOnly() {
+    if (mode !== "edit" || tourId == null) return;
+    setErr(null);
+    setTransportNewSectionErr(null);
+
+    if (transportDrafts.length === 0) {
+      setTransportNewSectionErr(
+        "Chưa có chặng mới nào để lưu. Nhấn «+ Thêm chặng» để thêm dòng.",
+      );
       return;
     }
-    setErr(null);
-    setMutating(true);
+
+    for (let i = 0; i < transportDrafts.length; i++) {
+      const d = transportDrafts[i];
+      if (!d.departurePoint.trim() || !d.arrivalPoint.trim()) {
+        setTransportNewSectionErr(
+          `Chặng #${i + 1}: nhập điểm xuất phát và điểm đến.`,
+        );
+        return;
+      }
+    }
+
+    setSavingNewTransports(true);
     try {
-      const res = await addTourTransport(tourId, {
-        supplierId: draft.supplierId ? Number(draft.supplierId) : undefined,
-        legOrder: Number(draft.legOrder) || 1,
-        vehicleType: draft.vehicleType,
-        vehicleDetail: draft.vehicleDetail.trim() || undefined,
-        seatClass: draft.seatClass.trim() || undefined,
-        departurePoint: draft.departurePoint.trim(),
-        arrivalPoint: draft.arrivalPoint.trim(),
-        estimatedHours: draft.estimatedHours ? Number(draft.estimatedHours) : undefined,
-        notes: draft.notes.trim() || undefined,
-      });
-      if (!res.ok) { setErr(errorMessage(res.body, res.status)); return; }
-      setLocalTransports((prev) => [...prev, res.data]);
-      setTransportDrafts((prev) => prev.filter((d) => d !== draft));
+      for (const d of transportDrafts) {
+        const res = await addTourTransport(
+          tourId,
+          transportDraftToCreateBody(d),
+        );
+        if (!res.ok) {
+          setErr(errorMessage(res.body, res.status));
+          return;
+        }
+        setLocalTransports((prev) => [...prev, res.data]);
+      }
+      setTransportDrafts([]);
+      router.refresh();
     } finally {
-      setMutating(false);
+      setSavingNewTransports(false);
     }
   }
 
@@ -949,51 +1393,51 @@ export function TourForm({
   async function saveNewSchedulesOnly() {
     if (mode !== "edit" || tourId == null) return;
     setErr(null);
-    const schedulesToCreate: CreateTourScheduleInput[] = [];
-    for (const d of scheduleDrafts) {
-      if (isEmptyScheduleDraft(d)) continue;
-      if (!d.startDate || !d.endDate) {
-        setErr(
-          "Lịch khởi hành: cần chọn cả ngày bắt đầu và ngày kết thúc.",
-        );
-        return;
+    setScheduleDraftFieldErrors({});
+    setScheduleNewSectionErr(null);
+
+    const draftFe: Record<
+      number,
+      Partial<Record<ScheduleFieldErrorKey, string>>
+    > = {};
+    for (let i = 0; i < scheduleDrafts.length; i++) {
+      const fe = getScheduleRowFieldErrors(scheduleDrafts[i], {
+        forbidPastDates: true,
+      });
+      if (Object.keys(fe).length > 0) {
+        draftFe[i] = fe;
       }
+    }
+    if (Object.keys(draftFe).length > 0) {
+      setScheduleDraftFieldErrors(draftFe);
+      return;
+    }
+
+    const schedulesToCreate: CreateTourScheduleInput[] = [];
+    for (let i = 0; i < scheduleDrafts.length; i++) {
+      const d = scheduleDrafts[i];
+      if (isEmptyScheduleDraft(d)) continue;
       const start = new Date(d.startDate);
       const end = new Date(d.endDate);
-      if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
-        setErr("Lịch khởi hành: ngày không hợp lệ.");
-        return;
-      }
-
-      const a = parseOptionalNumberInt(d.availableSeats);
-      if (!a.ok) {
-        setErr(`Lịch khởi hành: availableSeats - ${a.error}`);
-        return;
-      }
-      const b = parseOptionalNumberInt(d.bookedSeats);
-      if (!b.ok) {
-        setErr(`Lịch khởi hành: bookedSeats - ${b.error}`);
-        return;
-      }
+      const seats = parseRequiredPositiveInt(d.availableSeats);
       const p = parseOptionalNumberFloat(d.priceOverride);
-      if (!p.ok) {
-        setErr(`Lịch khởi hành: priceOverride - ${p.error}`);
-        return;
-      }
-
-      const status = d.status.trim() || undefined;
+      if (!seats.ok || !p.ok) return;
+      const st = (d.status.trim() || "OPEN") as
+        | "OPEN"
+        | "ACTIVE"
+        | "FULL"
+        | "CANCELLED";
       schedulesToCreate.push({
         startDate: start.toISOString(),
         endDate: end.toISOString(),
-        availableSeats: a.value,
-        bookedSeats: b.value,
+        availableSeats: seats.value,
         priceOverride: p.value,
-        status,
+        status: st,
       });
     }
 
     if (schedulesToCreate.length === 0) {
-      setErr("Chưa có lịch khởi hành mới hợp lệ để lưu.");
+      setScheduleNewSectionErr("Chưa có lịch nào hợp lệ để lưu. Vui lòng kiểm tra lại các trường bắt buộc.");
       return;
     }
 
@@ -1008,6 +1452,7 @@ export function TourForm({
         setLocalSchedules((prev) => [...prev, r.data]);
       }
       setScheduleDrafts([]);
+      setScheduleDraftFieldErrors({});
       router.refresh();
     } finally {
       setSavingNewSchedules(false);
@@ -1017,25 +1462,32 @@ export function TourForm({
   async function saveNewItinerariesOnly() {
     if (mode !== "edit" || tourId == null) return;
     setErr(null);
+    setItineraryDraftDayErrors({});
+    setItineraryNewSectionErr(null);
+
+    const dayErrors: Record<number, string> = {};
     const itinerariesToCreate: CreateTourItineraryInput[] = [];
-    for (const it of itineraryDrafts) {
+    for (let i = 0; i < itineraryDrafts.length; i++) {
+      const it = itineraryDrafts[i];
       if (isEmptyItineraryDraft(it)) continue;
       const day = Number(it.dayNumber);
       if (!Number.isFinite(day) || Math.floor(day) !== day || day < 1) {
-        setErr("Lịch trình: dayNumber phải là số nguyên >= 1.");
-        return;
+        dayErrors[i] = "Số nguyên ≥ 1.";
+      } else {
+        itinerariesToCreate.push({
+          dayNumber: day,
+          title: it.title.trim() || undefined,
+          description: it.description.trim() || undefined,
+        });
       }
-      const title = it.title.trim() || undefined;
-      const description = it.description.trim() || undefined;
-      itinerariesToCreate.push({
-        dayNumber: day,
-        title,
-        description,
-      });
+    }
+    if (Object.keys(dayErrors).length > 0) {
+      setItineraryDraftDayErrors(dayErrors);
+      return;
     }
 
     if (itinerariesToCreate.length === 0) {
-      setErr("Chưa có lịch trình mới hợp lệ để lưu.");
+      setItineraryNewSectionErr("Chưa có lịch trình nào hợp lệ để lưu. Vui lòng nhập số ngày.");
       return;
     }
 
@@ -1093,8 +1545,9 @@ export function TourForm({
             required
             value={fields.name}
             onChange={(e) => set("name", e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(!!tourFieldErrors.name)}`}
           />
+          <InlineFieldError message={tourFieldErrors.name} />
         </div>
         <div>
           <label className="mb-1.5 block text-sm text-slate-600">Slug</label>
@@ -1102,8 +1555,9 @@ export function TourForm({
             value={fields.slug}
             onChange={(e) => set("slug", e.target.value)}
             placeholder="tour-mien-tay"
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(!!tourFieldErrors.slug)}`}
           />
+          <InlineFieldError message={tourFieldErrors.slug} />
         </div>
         <div>
           <label className="mb-1.5 block text-sm text-slate-600">
@@ -1112,7 +1566,9 @@ export function TourForm({
           <select
             value={fields.departureLocationId}
             onChange={(e) => set("departureLocationId", e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(
+              !!tourFieldErrors.departureLocationId,
+            )}`}
           >
             {locations.map((l) => (
               <option key={l.id} value={l.id}>
@@ -1120,6 +1576,7 @@ export function TourForm({
               </option>
             ))}
           </select>
+          <InlineFieldError message={tourFieldErrors.departureLocationId} />
         </div>
         <div>
           <label className="mb-1.5 block text-sm text-slate-600">
@@ -1128,7 +1585,9 @@ export function TourForm({
           <select
             value={fields.destinationLocationId}
             onChange={(e) => set("destinationLocationId", e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(
+              !!tourFieldErrors.destinationLocationId,
+            )}`}
           >
             {locations.map((l) => (
               <option key={l.id} value={l.id}>
@@ -1136,6 +1595,7 @@ export function TourForm({
               </option>
             ))}
           </select>
+          <InlineFieldError message={tourFieldErrors.destinationLocationId} />
         </div>
         <div>
           <label className="mb-1.5 block text-sm text-slate-600">
@@ -1145,9 +1605,22 @@ export function TourForm({
             type="number"
             min={1}
             value={fields.durationDays}
-            onChange={(e) => set("durationDays", e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            onChange={(e) => {
+              const v = e.target.value;
+              setFields((f) => ({ ...f, durationDays: v }));
+              setTourFieldErrors((prev) => {
+                const next = { ...prev };
+                const msg = tourDurationDaysInlineError(v);
+                if (msg) next.durationDays = msg;
+                else delete next.durationDays;
+                return next;
+              });
+            }}
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(
+              !!tourFieldErrors.durationDays,
+            )}`}
           />
+          <InlineFieldError message={tourFieldErrors.durationDays} />
         </div>
         <div>
           <label className="mb-1.5 block text-sm text-slate-600">
@@ -1155,23 +1628,25 @@ export function TourForm({
           </label>
           <input
             type="number"
-            min={0}
+            inputMode="numeric"
+            step={1}
             value={fields.basePrice}
-            onChange={(e) => set("basePrice", e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            onChange={(e) => {
+              const v = e.target.value;
+              setFields((f) => ({ ...f, basePrice: v }));
+              setTourFieldErrors((prev) => {
+                const next = { ...prev };
+                const msg = tourBasePriceInlineError(v);
+                if (msg) next.basePrice = msg;
+                else delete next.basePrice;
+                return next;
+              });
+            }}
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 [-moz-appearance:textfield] [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${ringError(
+              !!tourFieldErrors.basePrice,
+            )}`}
           />
-        </div>
-        <div>
-          <label className="mb-1.5 block text-sm text-slate-600">
-            Số khách tối đa
-          </label>
-          <input
-            type="number"
-            min={1}
-            value={fields.maxPeople}
-            onChange={(e) => set("maxPeople", e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
-          />
+          <InlineFieldError message={tourFieldErrors.basePrice} />
         </div>
         <div>
           <label className="mb-1.5 block text-sm text-slate-600">
@@ -1224,15 +1699,18 @@ export function TourForm({
                 value={fields.thumbnailUrl}
                 onChange={(e) => set("thumbnailUrl", e.target.value)}
                 placeholder="https://..."
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+                className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(
+                  !!tourFieldErrors.thumbnailUrl,
+                )}`}
               />
+              <InlineFieldError message={tourFieldErrors.thumbnailUrl} />
               <button
                 type="button"
                 disabled={uploadingThumb}
                 onClick={() => thumbInputRef.current?.click()}
                 className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm text-slate-800 hover:bg-slate-100 disabled:opacity-50"
               >
-                {uploadingThumb ? "Đang tải…" : "Tải ảnh lên (Cloudinary / S3)"}
+                {uploadingThumb ? "Đang tải…" : "Tải ảnh lên"}
               </button>
             </div>
             {fields.thumbnailUrl.trim() ? (
@@ -1323,8 +1801,11 @@ export function TourForm({
             rows={4}
             value={fields.description}
             onChange={(e) => set("description", e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(
+              !!tourFieldErrors.description,
+            )}`}
           />
+          <InlineFieldError message={tourFieldErrors.description} />
         </div>
         <div className="sm:col-span-2">
           <label className="mb-1.5 block text-sm text-slate-600">
@@ -1335,8 +1816,11 @@ export function TourForm({
             value={fields.inclusions}
             onChange={(e) => set("inclusions", e.target.value)}
             placeholder="VD: Vé máy bay khứ hồi, Khách sạn 4 sao, Ăn sáng mỗi ngày..."
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(
+              !!tourFieldErrors.inclusions,
+            )}`}
           />
+          <InlineFieldError message={tourFieldErrors.inclusions} />
         </div>
         <div className="sm:col-span-2">
           <label className="mb-1.5 block text-sm text-slate-600">
@@ -1347,8 +1831,11 @@ export function TourForm({
             value={fields.exclusions}
             onChange={(e) => set("exclusions", e.target.value)}
             placeholder="VD: Visa, Chi phí cá nhân, Bữa ăn tự chọn..."
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(
+              !!tourFieldErrors.exclusions,
+            )}`}
           />
+          <InlineFieldError message={tourFieldErrors.exclusions} />
         </div>
         <div className="sm:col-span-2">
           <label className="mb-1.5 block text-sm text-slate-600">
@@ -1359,8 +1846,11 @@ export function TourForm({
             value={fields.cancellationPolicy}
             onChange={(e) => set("cancellationPolicy", e.target.value)}
             placeholder="VD: Hủy trước 15 ngày: hoàn 100%. Hủy trước 7 ngày: hoàn 50%..."
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-slate-900"
+            className={`w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 ${ringError(
+              !!tourFieldErrors.cancellationPolicy,
+            )}`}
           />
+          <InlineFieldError message={tourFieldErrors.cancellationPolicy} />
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 sm:col-span-2">
           <div className="flex items-center gap-2">
@@ -1384,10 +1874,45 @@ export function TourForm({
               className="h-4 w-4 rounded border-slate-300 bg-white"
             />
             <label htmlFor="isFeatured" className="text-sm text-slate-700">
-              Tour nổi bật (trang chủ, /tours?featured=true)
+              Tour nổi bật
             </label>
           </div>
         </div>
+
+        {/* Nhãn danh mục */}
+        {allTags.length > 0 && (
+          <div className="sm:col-span-2">
+            <p className="mb-2 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              Nhãn danh mục
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {allTags.map((tag) => {
+                const active = selectedTagIds.includes(tag.id);
+                return (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    onClick={() =>
+                      setSelectedTagIds((prev) =>
+                        active ? prev.filter((id) => id !== tag.id) : [...prev, tag.id],
+                      )
+                    }
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                      active
+                        ? "border-teal-500 bg-teal-50 text-teal-700"
+                        : "border-slate-200 text-slate-600 hover:border-teal-300 hover:bg-teal-50"
+                    }`}
+                  >
+                    {tag.name}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedTagIds.length === 0 && (
+              <p className="mt-1 text-xs text-slate-400">Chưa chọn nhãn nào</p>
+            )}
+          </div>
+        )}
       </div>
 
       {mode === "edit" && localTransports.length > 0 ? (
@@ -1478,7 +2003,13 @@ export function TourForm({
                         </div>
                         {s.status ? (
                           <div className="mt-1 text-xs text-slate-600">
-                            Trạng thái: {s.status}
+                            Trạng thái: {labelScheduleStatus(s.status)}
+                          </div>
+                        ) : null}
+                        {s.deletedAt ? (
+                          <div className="mt-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900">
+                            Đã ẩn khỏi site user — toàn bộ lịch tour đã kết
+                            thúc
                           </div>
                         ) : null}
                       </div>
@@ -1670,27 +2201,28 @@ export function TourForm({
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div
             className="absolute inset-0 bg-slate-900/40"
-            onMouseDown={() => setEditingScheduleId(null)}
+            onMouseDown={() => closeScheduleEditModal()}
           />
-          <div className="relative w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+          <div className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">
                   Sửa lịch khởi hành #{editingScheduleId}
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">
-                  Cập nhật thông tin lịch khởi hành (tác động ngay).
                 </p>
               </div>
               <button
                 type="button"
                 disabled={mutating}
-                onClick={() => setEditingScheduleId(null)}
+                onClick={() => closeScheduleEditModal()}
                 className="rounded-lg border border-slate-200 px-3 py-1 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 Đóng
               </button>
             </div>
+
+            <InlineFieldError message={scheduleModalFieldErrors._row} />
 
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2">
@@ -1700,14 +2232,19 @@ export function TourForm({
                 <input
                   type="datetime-local"
                   value={scheduleEditDraft.startDate}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     setScheduleEditDraft((prev) => ({
                       ...prev,
                       startDate: e.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                    }));
+                    clearScheduleModalCell("startDate");
+                    clearScheduleModalCell("_row");
+                  }}
+                  className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                    !!scheduleModalFieldErrors.startDate,
+                  )}`}
                 />
+                <InlineFieldError message={scheduleModalFieldErrors.startDate} />
               </div>
 
               <div className="sm:col-span-2">
@@ -1717,84 +2254,114 @@ export function TourForm({
                 <input
                   type="datetime-local"
                   value={scheduleEditDraft.endDate}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     setScheduleEditDraft((prev) => ({
                       ...prev,
                       endDate: e.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                    }));
+                    clearScheduleModalCell("endDate");
+                    clearScheduleModalCell("_row");
+                  }}
+                  className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                    !!scheduleModalFieldErrors.endDate,
+                  )}`}
                 />
+                <InlineFieldError message={scheduleModalFieldErrors.endDate} />
               </div>
 
               <div>
                 <label className="mb-1 block text-xs text-slate-600">
-                  Available seats
+                  Số chỗ *
                 </label>
                 <input
                   type="number"
-                  min={0}
+                  min={1}
                   value={scheduleEditDraft.availableSeats}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     setScheduleEditDraft((prev) => ({
                       ...prev,
                       availableSeats: e.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                    }));
+                    clearScheduleModalCell("availableSeats");
+                    clearScheduleModalCell("_row");
+                  }}
+                  className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                    !!scheduleModalFieldErrors.availableSeats,
+                  )}`}
                 />
+                <InlineFieldError message={scheduleModalFieldErrors.availableSeats} />
               </div>
 
               <div>
                 <label className="mb-1 block text-xs text-slate-600">
-                  Booked seats
+                  Đã đặt 
                 </label>
-                <input
-                  type="number"
-                  min={0}
-                  value={scheduleEditDraft.bookedSeats}
-                  onChange={(e) =>
-                    setScheduleEditDraft((prev) => ({
-                      ...prev,
-                      bookedSeats: e.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
-                />
+                <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
+                  {String(
+                    localSchedules.find((x) => x.id === editingScheduleId)
+                      ?.bookedSeats ?? 0,
+                  )}
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                </p>
               </div>
 
               <div>
                 <label className="mb-1 block text-xs text-slate-600">
-                  Price override
+                  Giá override (VND)
                 </label>
                 <input
                   type="number"
                   min={0}
                   value={scheduleEditDraft.priceOverride}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     setScheduleEditDraft((prev) => ({
                       ...prev,
                       priceOverride: e.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                    }));
+                    clearScheduleModalCell("priceOverride");
+                    clearScheduleModalCell("_row");
+                  }}
+                  className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                    !!scheduleModalFieldErrors.priceOverride,
+                  )}`}
                 />
+                <InlineFieldError message={scheduleModalFieldErrors.priceOverride} />
               </div>
 
               <div>
                 <label className="mb-1 block text-xs text-slate-600">
-                  Status
+                  Trạng thái
                 </label>
-                <input
+                <select
                   value={scheduleEditDraft.status}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     setScheduleEditDraft((prev) => ({
                       ...prev,
                       status: e.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
-                />
+                    }));
+                    clearScheduleModalCell("status");
+                    clearScheduleModalCell("_row");
+                  }}
+                  className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                    !!scheduleModalFieldErrors.status,
+                  )}`}
+                >
+                  {TOUR_SCHEDULE_STATUS_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                  {scheduleEditDraft.status &&
+                  !TOUR_SCHEDULE_STATUS_OPTIONS.some(
+                    (o) => o.value === scheduleEditDraft.status,
+                  ) ? (
+                    <option value={scheduleEditDraft.status}>
+                      {scheduleEditDraft.status} (trong DB)
+                    </option>
+                  ) : null}
+                </select>
+                <InlineFieldError message={scheduleModalFieldErrors.status} />
               </div>
             </div>
 
@@ -1809,7 +2376,7 @@ export function TourForm({
               </button>
               <button
                 type="button"
-                onClick={() => setEditingScheduleId(null)}
+                onClick={() => closeScheduleEditModal()}
                 disabled={mutating}
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
@@ -1847,7 +2414,10 @@ export function TourForm({
               <button
                 type="button"
                 disabled={mutating}
-                onClick={() => setEditingItineraryId(null)}
+                onClick={() => {
+                  setEditingItineraryId(null);
+                  setItineraryModalDayErr(undefined);
+                }}
                 className="rounded-lg border border-slate-200 px-3 py-1 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 Đóng
@@ -1857,20 +2427,22 @@ export function TourForm({
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-xs text-slate-600">
-                  Day number *
+                  Số ngày *
                 </label>
                 <input
                   type="number"
                   min={1}
                   value={itineraryEditDraft.dayNumber}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     setItineraryEditDraft((prev) => ({
                       ...prev,
                       dayNumber: e.target.value,
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                    }));
+                    setItineraryModalDayErr(undefined);
+                  }}
+                  className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(!!itineraryModalDayErr)}`}
                 />
+                <InlineFieldError message={itineraryModalDayErr} />
               </div>
               <div>
                 <label className="mb-1 block text-xs text-slate-600">
@@ -1918,7 +2490,10 @@ export function TourForm({
               </button>
               <button
                 type="button"
-                onClick={() => setEditingItineraryId(null)}
+                onClick={() => {
+                  setEditingItineraryId(null);
+                  setItineraryModalDayErr(undefined);
+                }}
                 disabled={mutating}
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
@@ -1940,18 +2515,14 @@ export function TourForm({
       <div className="space-y-4">
         {mode === "create" ? (
           <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            Khi tạo tour mới, lịch khởi hành và lịch trình được lưu cùng lúc với
-            nút <span className="font-medium">Tạo tour</span>. Nút{" "}
-            <span className="font-medium">Lưu</span> ở từng khối chỉ dùng khi{" "}
-            <span className="font-medium">sửa tour</span> (đã có mã tour).
           </p>
         ) : null}
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-slate-800">
-              Lịch khởi hành (tạo mới)
+              Lịch khởi hành
             </h2>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className={SECTION_HEADER_ACTIONS_GRID}>
               <button
                 type="button"
                 onClick={() => void saveNewSchedulesOnly()}
@@ -1962,7 +2533,7 @@ export function TourForm({
                   mode !== "edit" ||
                   tourId == null
                 }
-                className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-md border border-transparent bg-sky-600 px-2 text-xs font-semibold leading-normal text-white hover:bg-sky-500 disabled:opacity-50"
               >
                 {savingNewSchedules ? "Đang lưu…" : "Lưu"}
               </button>
@@ -1975,19 +2546,24 @@ export function TourForm({
                       startDate: "",
                       endDate: "",
                       availableSeats: "",
-                      bookedSeats: "",
                       priceOverride: "",
-                      status: "",
+                      status: "OPEN",
                     },
                   ])
                 }
                 disabled={saving || savingNewSchedules || mutating}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold leading-normal text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 + Thêm lịch
               </button>
             </div>
           </div>
+
+          {scheduleNewSectionErr ? (
+            <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {scheduleNewSectionErr}
+            </p>
+          ) : null}
 
           {scheduleDrafts.length === 0 ? (
             <p className="mt-3 text-sm text-slate-500">
@@ -1995,10 +2571,16 @@ export function TourForm({
             </p>
           ) : (
             <div className="mt-3 space-y-4">
-              {scheduleDrafts.map((d, idx) => (
+              {scheduleDrafts.map((d, idx) => {
+                const rowFe = scheduleDraftFieldErrors[idx];
+                const rowHasErr =
+                  rowFe != null && Object.keys(rowFe).length > 0;
+                return (
                 <div
                   key={idx}
-                  className="rounded-lg border border-slate-200 bg-white p-3"
+                  className={`rounded-lg border bg-white p-3 ${
+                    rowHasErr ? "border-red-300" : "border-slate-200"
+                  }`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="text-xs font-semibold text-slate-700">
@@ -2012,11 +2594,12 @@ export function TourForm({
                         savingNewItineraries ||
                         mutating
                       }
-                      onClick={() =>
+                      onClick={() => {
+                        setScheduleDraftFieldErrors({});
                         setScheduleDrafts((prev) =>
                           prev.filter((_, i) => i !== idx),
-                        )
-                      }
+                        );
+                      }}
                       className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                     >
                       Xóa
@@ -2030,16 +2613,16 @@ export function TourForm({
                       </label>
                       <input
                         type="datetime-local"
+                        min={datetimeLocalMinNow()}
                         value={d.startDate}
                         onChange={(e) =>
-                          setScheduleDrafts((prev) =>
-                            prev.map((x, i) =>
-                              i === idx ? { ...x, startDate: e.target.value } : x,
-                            ),
-                          )
+                          patchScheduleDraft(idx, { startDate: e.target.value }, "startDate")
                         }
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                        className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                          !!rowFe?.startDate,
+                        )}`}
                       />
+                      <InlineFieldError message={rowFe?.startDate} />
                     </div>
                     <div>
                       <label className="mb-1 block text-xs text-slate-600">
@@ -2047,98 +2630,86 @@ export function TourForm({
                       </label>
                       <input
                         type="datetime-local"
+                        min={scheduleDraftEndDatetimeLocalMin(d.startDate)}
                         value={d.endDate}
                         onChange={(e) =>
-                          setScheduleDrafts((prev) =>
-                            prev.map((x, i) =>
-                              i === idx ? { ...x, endDate: e.target.value } : x,
-                            ),
-                          )
+                          patchScheduleDraft(idx, { endDate: e.target.value }, "endDate")
                         }
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                        className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                          !!rowFe?.endDate,
+                        )}`}
                       />
+                      <InlineFieldError message={rowFe?.endDate} />
                     </div>
 
                     <div>
                       <label className="mb-1 block text-xs text-slate-600">
-                        Available seats
+                        Số chỗ  *
                       </label>
                       <input
                         type="number"
-                        min={0}
+                        min={1}
                         value={d.availableSeats}
                         onChange={(e) =>
-                          setScheduleDrafts((prev) =>
-                            prev.map((x, i) =>
-                              i === idx
-                                ? { ...x, availableSeats: e.target.value }
-                                : x,
-                            ),
+                          patchScheduleDraft(
+                            idx,
+                            { availableSeats: e.target.value },
+                            "availableSeats",
                           )
                         }
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                        className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                          !!rowFe?.availableSeats,
+                        )}`}
                       />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs text-slate-600">
-                        Booked seats
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={d.bookedSeats}
-                        onChange={(e) =>
-                          setScheduleDrafts((prev) =>
-                            prev.map((x, i) =>
-                              i === idx
-                                ? { ...x, bookedSeats: e.target.value }
-                                : x,
-                            ),
-                          )
-                        }
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
-                      />
+                      <InlineFieldError message={rowFe?.availableSeats} />
                     </div>
 
                     <div>
                       <label className="mb-1 block text-xs text-slate-600">
-                        Price override
+                        Giá override (VND)
                       </label>
                       <input
                         type="number"
                         min={0}
                         value={d.priceOverride}
                         onChange={(e) =>
-                          setScheduleDrafts((prev) =>
-                            prev.map((x, i) =>
-                              i === idx
-                                ? { ...x, priceOverride: e.target.value }
-                                : x,
-                            ),
+                          patchScheduleDraft(
+                            idx,
+                            { priceOverride: e.target.value },
+                            "priceOverride",
                           )
                         }
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                        className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                          !!rowFe?.priceOverride,
+                        )}`}
                       />
+                      <InlineFieldError message={rowFe?.priceOverride} />
                     </div>
                     <div>
                       <label className="mb-1 block text-xs text-slate-600">
-                        Status
+                        Trạng thái
                       </label>
-                      <input
+                      <select
                         value={d.status}
                         onChange={(e) =>
-                          setScheduleDrafts((prev) =>
-                            prev.map((x, i) =>
-                              i === idx ? { ...x, status: e.target.value } : x,
-                            ),
-                          )
+                          patchScheduleDraft(idx, { status: e.target.value }, "status")
                         }
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
-                      />
+                        className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(
+                          !!rowFe?.status,
+                        )}`}
+                      >
+                        {TOUR_SCHEDULE_STATUS_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                      <InlineFieldError message={rowFe?.status} />
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -2146,9 +2717,9 @@ export function TourForm({
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-slate-800">
-              Lịch trình (tạo mới)
+              Lịch trình
             </h2>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className={SECTION_HEADER_ACTIONS_GRID}>
               <button
                 type="button"
                 onClick={() => void saveNewItinerariesOnly()}
@@ -2159,7 +2730,7 @@ export function TourForm({
                   mode !== "edit" ||
                   tourId == null
                 }
-                className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-md border border-transparent bg-sky-600 px-2 text-xs font-semibold leading-normal text-white hover:bg-sky-500 disabled:opacity-50"
               >
                 {savingNewItineraries ? "Đang lưu…" : "Lưu"}
               </button>
@@ -2172,12 +2743,18 @@ export function TourForm({
                   ])
                 }
                 disabled={saving || savingNewItineraries || mutating}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold leading-normal text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 + Thêm ngày
               </button>
             </div>
           </div>
+
+          {itineraryNewSectionErr ? (
+            <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {itineraryNewSectionErr}
+            </p>
+          ) : null}
 
           {itineraryDrafts.length === 0 ? (
             <p className="mt-3 text-sm text-slate-500">
@@ -2185,10 +2762,12 @@ export function TourForm({
             </p>
           ) : (
             <div className="mt-3 space-y-4">
-              {itineraryDrafts.map((d, idx) => (
+              {itineraryDrafts.map((d, idx) => {
+                const dayErr = itineraryDraftDayErrors[idx];
+                return (
                 <div
                   key={idx}
-                  className="rounded-lg border border-slate-200 bg-white p-3"
+                  className={`rounded-lg border bg-white p-3 ${dayErr ? "border-red-300" : "border-slate-200"}`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="text-xs font-semibold text-slate-700">
@@ -2216,23 +2795,31 @@ export function TourForm({
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div>
                       <label className="mb-1 block text-xs text-slate-600">
-                        Day number *
+                        Số ngày *
                       </label>
                       <input
                         type="number"
                         min={1}
                         value={d.dayNumber}
-                        onChange={(e) =>
+                        onChange={(e) => {
                           setItineraryDrafts((prev) =>
                             prev.map((x, i) =>
                               i === idx
                                 ? { ...x, dayNumber: e.target.value }
                                 : x,
                             ),
-                          )
-                        }
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900"
+                          );
+                          setItineraryDraftDayErrors((prev) => {
+                            if (!prev[idx]) return prev;
+                            const next = { ...prev };
+                            delete next[idx];
+                            return next;
+                          });
+                          setItineraryNewSectionErr(null);
+                        }}
+                        className={`w-full rounded-lg border bg-white px-3 py-2.5 text-sm text-slate-900 ${ringError(!!dayErr)}`}
                       />
+                      <InlineFieldError message={dayErr} />
                     </div>
                     <div>
                       <label className="mb-1 block text-xs text-slate-600">
@@ -2271,35 +2858,60 @@ export function TourForm({
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
 
-        {mode === "edit" ? (
-          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-sm font-semibold text-slate-800">
-                Chặng vận chuyển (thêm mới)
+                Chặng vận chuyển
               </h2>
-              <button
-                type="button"
-                onClick={() =>
-                  setTransportDrafts((prev) => [
-                    ...prev,
-                    emptyTransportDraft(localTransports.length + prev.length + 1),
-                  ])
-                }
-                disabled={saving || mutating}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                + Thêm chặng
-              </button>
+              <div className={SECTION_HEADER_ACTIONS_GRID}>
+                <button
+                  type="button"
+                  onClick={() => void saveNewTransportsOnly()}
+                  disabled={
+                    saving ||
+                    savingNewTransports ||
+                    mutating ||
+                    mode !== "edit" ||
+                    tourId == null
+                  }
+                  className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-md border border-transparent bg-sky-600 px-2 text-xs font-semibold leading-normal text-white hover:bg-sky-500 disabled:opacity-50"
+                >
+                  {savingNewTransports ? "Đang lưu…" : "Lưu"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTransportNewSectionErr(null);
+                    setTransportDrafts((prev) => [
+                      ...prev,
+                      emptyTransportDraft(
+                        localTransports.length + prev.length + 1,
+                      ),
+                    ]);
+                  }}
+                  disabled={saving || savingNewTransports || mutating}
+                  className="inline-flex h-8 w-full items-center justify-center whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold leading-normal text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  + Thêm chặng
+                </button>
+              </div>
             </div>
+
+            {transportNewSectionErr ? (
+              <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {transportNewSectionErr}
+              </p>
+            ) : null}
 
             {transportDrafts.length === 0 ? (
               <p className="mt-3 text-sm text-slate-500">
-                Chưa có chặng mới nào. Nhấn &quot;+ Thêm chặng&quot; để bổ sung.
+                Chưa có chặng vận chuyển mới nào để tạo.
               </p>
             ) : (
               <div className="mt-3 space-y-4">
@@ -2312,26 +2924,20 @@ export function TourForm({
                       <span className="text-xs font-semibold text-slate-700">
                         Chặng #{idx + 1}
                       </span>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          disabled={mutating}
-                          onClick={() => void handleAddTransport(d)}
-                          className="rounded-lg bg-sky-600 px-3 py-1 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
-                        >
-                          {mutating ? "Đang lưu..." : "Lưu chặng"}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={mutating}
-                          onClick={() =>
-                            setTransportDrafts((prev) => prev.filter((_, i) => i !== idx))
-                          }
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-                        >
-                          Xóa
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        disabled={
+                          saving || savingNewTransports || mutating
+                        }
+                        onClick={() =>
+                          setTransportDrafts((prev) =>
+                            prev.filter((_, i) => i !== idx),
+                          )
+                        }
+                        className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                      >
+                        Xóa
+                      </button>
                     </div>
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
                       <div>
@@ -2474,7 +3080,6 @@ export function TourForm({
               </div>
             )}
           </section>
-        ) : null}
       </div>
 
       {/* Modal thêm lưu trú */}

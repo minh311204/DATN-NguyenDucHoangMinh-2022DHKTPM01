@@ -56,6 +56,8 @@ export type TourSchedule = {
   bookedSeats?: number | null;
   priceOverride?: number | null;
   status?: string | null;
+  /** Đã ẩn khỏi site user (toàn bộ lịch tour đã kết thúc) */
+  deletedAt?: string | null;
 };
 
 export type TourTagRow = {
@@ -240,12 +242,11 @@ export type CreateTourVideoInput = {
   videoUrl: string;
 };
 
-/** ISO 8601 datetime (`z.string().datetime()` trên backend). */
+/** ISO 8601 datetime (`z.string().datetime()` trên backend). bookedSeats chỉ do hệ thống (đặt tour), không gửi khi tạo. */
 export type CreateTourScheduleInput = {
   startDate: string;
   endDate: string;
   availableSeats?: number;
-  bookedSeats?: number;
   priceOverride?: number;
   status?: string;
 };

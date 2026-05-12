@@ -10,7 +10,7 @@ import type { TourDetail } from '@/lib/api-types';
 const REDIRECT_MS = 5200;
 
 /**
- * Màn ĐẶT TOUR sau VNPAY: stepper HOÀN TẤT xanh, thông báo, rồi về trang chủ.
+ * Màn đặt tour sau VNPAY: stepper HOÀN TẤT xanh, thông báo, rồi về trang chủ.
  */
 export function BookingPaySuccessReturnView({
   tour,
@@ -55,8 +55,8 @@ export function BookingPaySuccessReturnView({
               Trang chủ
             </Link>
           </div>
-          <h1 className="mt-6 text-center text-2xl font-bold tracking-[0.2em] text-[#0b5ea8] sm:mt-8 sm:text-3xl">
-            ĐẶT TOUR
+          <h1 className="mt-6 text-center text-2xl font-bold tracking-tight text-[#0b5ea8] sm:mt-8 sm:text-3xl">
+            Đặt tour của bạn
           </h1>
           <p className="mx-auto mt-2 max-w-lg px-2 text-center text-sm font-medium text-emerald-800 sm:mt-3">
             Đặt tour thành công — cảm ơn bạn đã tin tưởng!

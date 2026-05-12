@@ -6,6 +6,7 @@ import { MessageCircle, Send, X } from "lucide-react";
 import type { TourListItem } from "@/lib/api-types";
 import { postAiMessage } from "@/lib/client-ai";
 import { formatVnd } from "@/lib/format";
+import { AUTH_CHANGED_EVENT } from "@/lib/auth-storage";
 
 type ChatRole = "user" | "assistant";
 type ChatItem =
@@ -70,6 +71,17 @@ export function ChatWidget() {
     } catch {
       // ignore
     }
+  }, []);
+
+  // Listen for login/logout to reset chat
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleAuth = () => {
+      resetChat();
+    };
+    window.addEventListener(AUTH_CHANGED_EVENT, handleAuth);
+    return () => window.removeEventListener(AUTH_CHANGED_EVENT, handleAuth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Scroll to bottom whenever messages change or panel opens

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common'
 import { PrismaService } from '../prisma/prima.service'
 import { randomUUID } from 'crypto'
 import { Prisma } from '@prisma/client'
@@ -9,6 +9,7 @@ import {
   isNaturalReplyEnabled,
   type LlmExtractedSlots,
 } from './llm'
+import { generateReplyWithWebSearch } from './openai-search'
 
 type SendMessageInput = {
   userId: number | null
@@ -43,8 +44,18 @@ type ResolvedSlots = {
 type RecommendToursResult = { tours: any[]; strictMatch: boolean }
 
 @Injectable()
-export class AiService {
-  constructor(private readonly prisma: PrismaService) {}
+export class AiService implements OnModuleInit {
+  constructor(private readonly prisma: PrismaService) { }
+
+  async onModuleInit() {
+    // Tự động xóa sạch lịch sử chat khi server khởi động lại (yêu cầu của khách hàng)
+    try {
+      await this.prisma.chatMessage.deleteMany({})
+      await this.prisma.chatSession.deleteMany({})
+    } catch (e) {
+      // ignore
+    }
+  }
 
   // ─────────────────────────────────────────────────────────
   // Text helpers
@@ -284,12 +295,27 @@ export class AiService {
     const trimmed = message.trim()
     const isGreeting = /^(hi|hello|xin chào|chào|chao|alo|hey)\b/i.test(trimmed)
 
-    // LLM nhận diện FAQ nhưng keyword rule không bắt được
     if (inferredIntent === 'faq') {
       const again = this.matchFaq(message)
-      const reply = again
-        ? again.answer
-        : 'Mình có thể giúp nhanh về: chính sách hủy/đổi, thanh toán (VNPay/chuyển khoản), giấy tờ, trẻ em, lịch khởi hành, đặt cọc. Bạn gõ từ khóa (vd. "hủy tour", "thanh toán") hoặc hỏi rõ hơn để mình trả lời đúng hơn nhé.'
+      let reply = again?.answer
+      if (!reply) {
+        try {
+          const priorForReply = await this.getPriorConversationTurns(session.id, message)
+          const searchReply = await generateReplyWithWebSearch({
+            userMessage: message,
+            conversation: priorForReply,
+            tours: []
+          })
+          if (searchReply) {
+            reply = searchReply
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      if (!reply) {
+        reply = 'Mình có thể giúp nhanh về: chính sách hủy/đổi, thanh toán (VNPay/chuyển khoản), giấy tờ, trẻ em, lịch khởi hành, đặt cọc. Bạn gõ từ khóa (vd. "hủy tour", "thanh toán") hoặc hỏi rõ hơn để mình trả lời đúng hơn nhé.'
+      }
       await this.saveAssistant(session.id, reply)
       return { sessionId: session.id, sessionKey: session.sessionKey ?? undefined, reply }
     }
@@ -301,7 +327,18 @@ export class AiService {
     }
 
     if (inferredIntent === 'other') {
-      const reply = 'Mình chỉ hỗ trợ tư vấn và gợi ý tour du lịch. Bạn muốn đi đâu hay hỏi về chính sách đặt tour không ạ?'
+      let reply = 'Mình chỉ hỗ trợ tư vấn và gợi ý tour du lịch. Bạn muốn đi đâu hay hỏi về chính sách đặt tour không ạ?'
+      try {
+        const priorForReply = await this.getPriorConversationTurns(session.id, message)
+        const geminiReply = await generateReplyWithWebSearch({
+          userMessage: message,
+          conversation: priorForReply,
+          tours: []
+        })
+        if (geminiReply) reply = geminiReply
+      } catch (e) {
+        // ignore
+      }
       await this.saveAssistant(session.id, reply)
       return { sessionId: session.id, sessionKey: session.sessionKey ?? undefined, reply }
     }
@@ -347,23 +384,35 @@ export class AiService {
       if (isNaturalReplyEnabled()) {
         try {
           const priorForReply = await this.getPriorConversationTurns(session.id, message)
-          const natural = await generateRecommendationReplyNatural({
+          const toursForReply = finalTours.map((t) => ({
+            name: t.name,
+            durationDays: t.durationDays ?? null,
+            basePrice: t.basePrice,
+            departure: t.departureLocation?.name,
+            destination: t.destinationLocation?.name,
+            slug: t.slug ?? null,
+          }))
+
+          const geminiReply = await generateReplyWithWebSearch({
             userMessage: message,
-            fallbackReply,
-            followUps,
-            matched,
-            personalized,
             conversation: priorForReply,
-            tours: finalTours.map((t) => ({
-              name: t.name,
-              durationDays: t.durationDays ?? null,
-              basePrice: t.basePrice,
-              departure: t.departureLocation?.name,
-              destination: t.destinationLocation?.name,
-              slug: t.slug ?? null,
-            })),
+            tours: toursForReply
           })
-          if (natural) reply = natural
+
+          if (geminiReply) {
+            reply = geminiReply
+          } else {
+            const natural = await generateRecommendationReplyNatural({
+              userMessage: message,
+              fallbackReply,
+              followUps,
+              matched,
+              personalized,
+              conversation: priorForReply,
+              tours: toursForReply,
+            })
+            if (natural) reply = natural
+          }
         } catch {
           reply = fallbackReply
         }
@@ -444,9 +493,9 @@ export class AiService {
     const rulesTransport = /máy bay|bay|flight/.test(text) ? 'FLIGHT' : /xe|bus/.test(text) ? 'BUS' : undefined
     const rulesTourLine = /cao cấp|premium/.test(text) ? 'PREMIUM'
       : /tiêu chuẩn|standard/.test(text) ? 'STANDARD'
-      : /tiết kiệm|economy/.test(text) ? 'ECONOMY'
-      : /giá tốt|good value/.test(text) ? 'GOOD_VALUE'
-      : undefined
+        : /tiết kiệm|economy/.test(text) ? 'ECONOMY'
+          : /giá tốt|good value/.test(text) ? 'GOOD_VALUE'
+            : undefined
 
     // Region / điểm đến: nhìn cả lịch sử user (regionContext) để không mất "miền Tây" ở lượt chỉ sửa ngày/giá
     const regionEntry = Object.entries(AiService.REGION_KEYWORDS).find(([k]) =>
@@ -493,7 +542,7 @@ export class AiService {
     const llmKeywords = llmSlots?.keywords?.filter((k) => k.length >= 2).slice(0, 4) ?? []
 
     const qTokens = [
-      ...(q ? this.normalizeForMatch(q).split(' ').filter((x) => x.length >= 2 && !['tour','du','lich','di','den'].includes(x)) : []),
+      ...(q ? this.normalizeForMatch(q).split(' ').filter((x) => x.length >= 2 && !['tour', 'du', 'lich', 'di', 'den'].includes(x)) : []),
       ...llmKeywords.map((k) => this.normalizeForMatch(k)),
     ].filter((v, i, a) => a.indexOf(v) === i).slice(0, 8)
 
@@ -502,9 +551,9 @@ export class AiService {
     let budget: ResolvedSlots['budget'] =
       hasBudgetHint && (llmSlots?.budgetMin != null || llmSlots?.budgetMax != null)
         ? {
-            ...(llmSlots.budgetMin != null ? { min: llmSlots.budgetMin } : {}),
-            ...(llmSlots.budgetMax != null ? { max: llmSlots.budgetMax } : {}),
-          }
+          ...(llmSlots.budgetMin != null ? { min: llmSlots.budgetMin } : {}),
+          ...(llmSlots.budgetMax != null ? { max: llmSlots.budgetMax } : {}),
+        }
         : rulesBudget
 
     const isBookingText = /\b(dat tour|dat ve|booking|book tour|book|giu cho)\b/i.test(matchText)

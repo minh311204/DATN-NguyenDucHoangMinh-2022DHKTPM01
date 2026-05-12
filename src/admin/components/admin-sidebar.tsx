@@ -55,7 +55,6 @@ export function AdminSidebar() {
               </span>
             </div>
             <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
-              Quản trị tour &amp; booking
             </p>
           </div>
         </div>

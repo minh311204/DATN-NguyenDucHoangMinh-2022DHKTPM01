@@ -18,7 +18,8 @@ type Props = {
   kicker: ReactNode;
   /** Tuỳ chọn: dòng tagline lớn khi cuộn (bỏ trống nếu không cần) */
   tagline?: ReactNode;
-  subline: ReactNode;
+  /** Tuỳ chọn: dòng phụ dưới kicker/tagline */
+  subline?: ReactNode;
   search: ReactNode;
   className?: string;
 };
@@ -38,8 +39,16 @@ export function HomeHeroTravelaReveal({
 }: Props) {
   const [revealed, setRevealed] = useState(false);
   const hasTagline = tagline != null && tagline !== false;
+  const hasSubline = subline != null && subline !== false;
   const subStagger = hasTagline ? "home-hero-stagger-2" : "home-hero-stagger-1";
-  const searchStagger = hasTagline ? "home-hero-stagger-3" : "home-hero-stagger-2";
+  const searchStagger =
+    !hasSubline
+      ? hasTagline
+        ? "home-hero-stagger-2"
+        : "home-hero-stagger-1"
+      : hasTagline
+        ? "home-hero-stagger-3"
+        : "home-hero-stagger-2";
 
   useLayoutEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -76,17 +85,27 @@ export function HomeHeroTravelaReveal({
             {tagline}
           </div>
         ) : null}
+        {hasSubline ? (
+          <div
+            className={cn(
+              hasTagline ? "mt-3" : "mt-5 sm:mt-6",
+              subStagger,
+              "mx-auto max-w-2xl text-center",
+            )}
+          >
+            {subline}
+          </div>
+        ) : null}
         <div
           className={cn(
-            hasTagline ? "mt-3" : "mt-5 sm:mt-6",
-            subStagger,
-            "mx-auto max-w-2xl text-center",
+            "mx-auto w-full max-w-5xl",
+            searchStagger,
+            hasSubline
+              ? "mt-6 sm:mt-8"
+              : hasTagline
+                ? "mt-8 sm:mt-10"
+                : "mt-5 sm:mt-6",
           )}
-        >
-          {subline}
-        </div>
-        <div
-          className={cn("mx-auto mt-6 w-full max-w-5xl sm:mt-8", searchStagger)}
         >
           {search}
         </div>

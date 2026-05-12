@@ -42,6 +42,8 @@ export type BookingListItem = {
   tourScheduleId: number;
   numberOfPeople: number;
   bookingDateUtc?: string | null;
+  /** PENDING: hết hạn thanh toán — coi như không còn chiếm lịch */
+  expiredAtUtc?: string | null;
   totalAmount?: number | null;
   status: BookingStatus;
   cancelMinDaysBeforeDeparture: number;
@@ -71,6 +73,8 @@ export type CreateBookingInput = {
   notes?: string;
   singleRoomCount?: number;
   discountCode?: string;
+  /** Mặc định true — false = đặt hộ (bỏ kiểm tra trùng lịch, cần đăng nhập). */
+  bookingForSelf?: boolean;
 };
 
 function getAccessToken(): string | null {
