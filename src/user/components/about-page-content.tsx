@@ -32,12 +32,12 @@ const INTRO_LIST = [
 
 const TEAM = [
   {
-    name: "Nguyễn Minh Diện",
+    name: "Nguyễn Đức Hoàng Minh",
     role: "Founder",
     image: IMG.tourist,
   },
   {
-    name: "Bảo Ngân",
+    name: "Phạm Đình Dũng",
     role: "Co-founder",
     image: IMG.feature2,
   },

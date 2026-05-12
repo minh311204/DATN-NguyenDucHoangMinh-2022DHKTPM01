@@ -136,12 +136,12 @@ export function TourDealCard({
           />
         </div>
         {showPromo ? (
-          <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[15] flex items-center justify-between gap-2 border-t border-stone-100 bg-white/95 px-2.5 py-1.5 text-[11px] backdrop-blur-sm sm:text-xs">
-            <span className="flex items-center gap-1 font-semibold text-sky-700">
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[15] flex flex-wrap items-end justify-between gap-x-2 gap-y-0.5 border-t border-stone-100 bg-white/95 px-2.5 py-1.5 text-[11px] backdrop-blur-sm sm:text-xs">
+            <span className="flex shrink-0 items-center gap-1 font-semibold text-sky-700">
               <Clock className="h-3.5 w-3.5 shrink-0" />
               Giờ chót
             </span>
-            <span className="text-red-600">
+            <span className="min-w-0 flex-1 basis-0 text-right text-[10px] leading-tight text-red-600 sm:text-xs">
               <DealCountdown deadlineMs={deadlineMs} />
             </span>
           </div>

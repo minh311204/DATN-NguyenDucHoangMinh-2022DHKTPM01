@@ -33,7 +33,7 @@ export function FeaturedToursSection({
       className="scroll-mt-24 border-b border-sky-200/60 py-10 sm:scroll-mt-28 sm:py-14"
       style={{ backgroundColor: "#e0f2f7" }}
     >
-      <MotionInView className="tours-reveal-wrap mx-auto max-w-6xl px-4 sm:px-6">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1 text-center sm:text-left">
             <h2 className="text-xl font-bold uppercase tracking-wide text-[#0056b3] sm:text-2xl">
@@ -75,19 +75,25 @@ export function FeaturedToursSection({
         ) : tours.length === 0 ? (
           <p className="mt-8 text-center text-sm text-stone-600">{emptyMessage}</p>
         ) : (
-          <div
-            ref={scrollerRef}
-            className="featured-tours-scroll mt-8 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2 [-ms-overflow-style:none] [scrollbar-width:none] sm:gap-5 [&::-webkit-scrollbar]:hidden"
+          <MotionInView
+            className="tours-reveal-wrap"
+            once
+            rootMargin="0px 0px 8% 0px"
           >
-            {tours.map((t) => (
-              <div
-                key={t.id}
-                className="tours-stagger-item w-[min(88vw,300px)] shrink-0 snap-start scroll-ml-4 first:scroll-ml-0 sm:w-[300px] sm:scroll-ml-0"
-              >
-                <TourDealCard tour={t} homeFeatured />
-              </div>
-            ))}
-          </div>
+            <div
+              ref={scrollerRef}
+              className="featured-tours-scroll mt-8 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2 [-ms-overflow-style:none] [scrollbar-width:none] sm:gap-5 [&::-webkit-scrollbar]:hidden"
+            >
+              {tours.map((t) => (
+                <div
+                  key={t.id}
+                  className="tours-stagger-item w-[min(88vw,300px)] shrink-0 snap-start scroll-ml-4 first:scroll-ml-0 sm:w-[300px] sm:scroll-ml-0"
+                >
+                  <TourDealCard tour={t} homeFeatured />
+                </div>
+              ))}
+            </div>
+          </MotionInView>
         )}
 
         <div className="mt-10 flex justify-center">
@@ -98,7 +104,7 @@ export function FeaturedToursSection({
             Xem tất cả
           </Link>
         </div>
-      </MotionInView>
+      </div>
     </section>
   );
 }

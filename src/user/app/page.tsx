@@ -19,10 +19,19 @@ export default async function HomePage() {
     next: { revalidate: 60 },
   });
 
-  const featured = res.ok
+  let featured = res.ok
     ? unwrapTourListResponse(res.data).tours.slice(0, 6)
     : [];
   const loadError = !res.ok;
+
+  if (res.ok && featured.length === 0) {
+    const fallback = await fetchTours({ isActive: "true" }, {
+      next: { revalidate: 60 },
+    });
+    if (fallback.ok) {
+      featured = unwrapTourListResponse(fallback.data).tours.slice(0, 6);
+    }
+  }
 
   return (
     <>

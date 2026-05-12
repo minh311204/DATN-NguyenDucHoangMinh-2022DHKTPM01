@@ -60,6 +60,10 @@ import {
 /* ══════════════════════════════════════════════
    HELPERS
 ══════════════════════════════════════════════ */
+
+/** Đặt `true` nếu cần hiện lại ô nhập mã giảm giá + modal. */
+const SHOW_PROMO_CODE_UI = false;
+
 type PassengerForm = {
   fullName: string;
   dateOfBirth: string;
@@ -1219,7 +1223,7 @@ function OrderSummary({
           </div>
         ) : null}
 
-        {unitPrice != null ? (
+        {SHOW_PROMO_CODE_UI && unitPrice != null ? (
           <div className="mt-3 border-y border-stone-200 py-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
@@ -3410,7 +3414,7 @@ export default function TourBookingClient({
         submitting={submitting}
       />
 
-      {promoOpen ? (
+      {SHOW_PROMO_CODE_UI && promoOpen ? (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-4"
           role="dialog"
