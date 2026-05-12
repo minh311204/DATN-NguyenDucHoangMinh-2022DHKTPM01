@@ -941,6 +941,46 @@ export class BookingService {
     return { scanned: expiredRows.length, expiredCount }
   }
 
+  /**
+   * Đặt chỗ đã xác nhận (đã thanh toán): khi giờ khởi hành lịch đã qua so với hiện tại,
+   * tự chuyển sang Hoàn tất (COMPLETED). Chỗ ngồi không đổi (khác với hủy).
+   */
+  async autoCompleteBookingsAfterDeparture(limit = 200) {
+    const now = new Date()
+    const rows = await this.prisma.booking.findMany({
+      where: {
+        status: 'CONFIRMED',
+        schedule: { startDate: { lt: now } },
+      },
+      select: {
+        id: true,
+        status: true,
+        numberOfPeople: true,
+        tourScheduleId: true,
+      },
+      orderBy: { id: 'asc' },
+      take: limit,
+    })
+
+    let completedCount = 0
+    for (const row of rows) {
+      try {
+        await this.applyStatusChange(
+          row.id,
+          row.status,
+          'COMPLETED',
+          row.numberOfPeople,
+          row.tourScheduleId,
+        )
+        completedCount++
+      } catch {
+        // best-effort batch: continue remaining rows
+      }
+    }
+
+    return { scanned: rows.length, completedCount }
+  }
+
   private async applyStatusChange(
     bookingId: number,
     oldStatus: BookingStatus,

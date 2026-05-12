@@ -134,7 +134,7 @@ export function AdminDashboardClient() {
         {
           label: "Doanh thu",
           value: formatVnd(s.totalRevenueVnd),
-          hint: "Thanh toán thành công (theo ngày TT)",
+          hint: "",
           delta: cmp.revenueChangePercent,
           icon: Wallet,
           accent:
@@ -148,7 +148,7 @@ export function AdminDashboardClient() {
         {
           label: "Số đơn đặt",
           value: String(s.bookingCount),
-          hint: "Theo ngày tạo đơn trong khoảng",
+          hint: "",
           delta: cmp.bookingChangePercent,
           icon: Ticket,
           accent:
@@ -162,7 +162,7 @@ export function AdminDashboardClient() {
         {
           label: "Khách mới",
           value: String(s.newUsersCount),
-          hint: "User đăng ký trong khoảng",
+          hint: "",
           delta: cmp.usersChangePercent,
           icon: Users,
           accent:
@@ -179,7 +179,7 @@ export function AdminDashboardClient() {
             s.completionRatePercent != null
               ? `${s.completionRatePercent}%`
               : "—",
-          hint: `PENDING toàn hệ thống: ${s.pendingBookingsCount}`,
+          hint: ``,
           delta: null,
           icon: TrendingUp,
           accent:
@@ -213,9 +213,9 @@ export function AdminDashboardClient() {
             }
             className="mt-1 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-900 transition focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
           >
-            <option value="day">Ngày (khoảng thời gian)</option>
-            <option value="month">Tháng (trong một năm)</option>
-            <option value="year">Năm (nhiều năm)</option>
+            <option value="day">Ngày</option>
+            <option value="month">Tháng</option>
+            <option value="year">Năm</option>
           </select>
         </div>
         {granularity === "day" ? (
@@ -387,16 +387,14 @@ export function AdminDashboardClient() {
                 Trạng thái booking
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Phân bổ đơn trong khoảng thời gian
               </p>
               <BookingStatusDonut breakdown={stats.bookingStatusBreakdown} />
             </section>
             <section className="col-span-12 rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm ring-1 ring-slate-900/[0.04] dark:border-slate-700 dark:bg-slate-900 md:col-span-6 lg:col-span-4">
               <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                “Phễu” trạng thái
+                Trạng thái bookingbooking
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Độ rộng thanh theo tỉ lệ so với trạng thái lớn nhất
               </p>
               <div className="mt-4">
                 <BookingStatusFunnel breakdown={stats.bookingStatusBreakdown} />
@@ -404,20 +402,18 @@ export function AdminDashboardClient() {
             </section>
             <section className="col-span-12 rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm ring-1 ring-slate-900/[0.04] dark:border-slate-700 dark:bg-slate-900 md:col-span-6 lg:col-span-4">
               <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                Đặt tour theo miền (điểm đến)
+                Đặt tour điểm đến
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Gom theo vùng của điểm đến tour
               </p>
               <RegionBookingsPie rows={stats.toursByRegion} />
             </section>
 
             <section className="col-span-12 rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm ring-1 ring-slate-900/[0.04] dark:border-slate-700 dark:bg-slate-900 md:col-span-6">
               <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                Booking theo thứ trong tuần
+                Booking theo ngàyngày
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Ngày nào nhiều đơn nhất (trong khoảng đã chọn)
               </p>
               <WeekdayBookingBar data={stats.heatmapWeekday} />
             </section>
@@ -426,7 +422,6 @@ export function AdminDashboardClient() {
                 Nhà cung cấp theo loại
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Số lượng NCC đang có (không gắn trực tiếp doanh thu)
               </p>
               <SupplierTypeBar rows={stats.supplierCountByType} />
             </section>

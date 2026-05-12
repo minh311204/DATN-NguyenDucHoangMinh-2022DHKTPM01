@@ -29,7 +29,6 @@ const SERVICE_LINKS = [
 const COMPANY_LINKS = [
   { href: "/gioi-thieu", label: "Giới thiệu về công ty" },
   { href: "/lien-he", label: "Liên hệ với chúng tôi" },
-  { href: "/tin-tuc", label: "Tin tức" },
 ];
 
 const DESTINATION_LINKS = [

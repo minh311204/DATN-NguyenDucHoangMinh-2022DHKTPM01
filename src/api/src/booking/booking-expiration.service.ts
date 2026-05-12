@@ -9,11 +9,19 @@ export class BookingExpirationService {
   constructor(private readonly bookingService: BookingService) {}
 
   @Interval(60_000)
-  async expirePendingBookingsJob() {
-    const result = await this.bookingService.expirePendingBookings()
-    if (result.expiredCount > 0) {
+  async bookingMaintenanceJob() {
+    const expired = await this.bookingService.expirePendingBookings()
+    if (expired.expiredCount > 0) {
       this.log.log(
-        `Auto-cancelled ${result.expiredCount}/${result.scanned} expired pending bookings`,
+        `Auto-cancelled ${expired.expiredCount}/${expired.scanned} expired pending bookings`,
+      )
+    }
+
+    const completed =
+      await this.bookingService.autoCompleteBookingsAfterDeparture()
+    if (completed.completedCount > 0) {
+      this.log.log(
+        `Auto-completed ${completed.completedCount}/${completed.scanned} bookings after departure time`,
       )
     }
   }

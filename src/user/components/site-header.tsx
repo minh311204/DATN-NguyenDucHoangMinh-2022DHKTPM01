@@ -30,7 +30,6 @@ const MAIN_NAV: { href: string; label: string }[] = [
   { href: "/", label: "Trang chủ" },
   { href: "/gioi-thieu", label: "Giới thiệu" },
   { href: "/tours", label: "Khám phá" },
-  { href: "/tin-tuc", label: "Tin tức" },
   { href: "/lien-he", label: "Liên hệ" },
 ];
 
