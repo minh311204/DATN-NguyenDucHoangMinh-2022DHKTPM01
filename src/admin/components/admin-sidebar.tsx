@@ -9,15 +9,17 @@ import {
   CreditCard,
   Users,
   Truck,
+  Layers,
 } from "lucide-react";
 
 const nav = [
   { href: "/", label: "Tổng quan", icon: LayoutDashboard },
-  { href: "/tours", label: "Danh mục tour", icon: MapPinned },
-  { href: "/bookings", label: "Booking", icon: CalendarCheck },
-  { href: "/payments", label: "Thanh toán", icon: CreditCard },
-  { href: "/users", label: "Quản lý user", icon: Users },
-  { href: "/suppliers", label: "Nhà cung cấp", icon: Truck },
+  { href: "/tours", label: "Quản lý tour", icon: MapPinned },
+  { href: "/catalog", label: "Quản lý danh mục", icon: Layers },
+  { href: "/bookings", label: "Quản lý booking", icon: CalendarCheck },
+  { href: "/payments", label: "Quản lý thanh toán", icon: CreditCard },
+  { href: "/users", label: "Quản lý người dùng", icon: Users },
+  { href: "/suppliers", label: "Quản lý cung cấp", icon: Truck },
 ];
 
 export function AdminSidebar() {
@@ -53,7 +55,7 @@ export function AdminSidebar() {
               </span>
             </div>
             <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
-              Bảng điều khiển vận hành
+              Quản trị tour &amp; booking
             </p>
           </div>
         </div>

@@ -6,6 +6,7 @@ import { Heart, Trash2 } from "lucide-react";
 import { fetchMyWishlist, removeFromWishlist } from "@/lib/client-wishlist";
 import type { WishlistItem } from "@/lib/api-types";
 import { hasAccessToken } from "@/lib/auth-storage";
+import { ensureSessionFresh } from "@/lib/client-auth";
 import { formatVnd } from "@/lib/format";
 import { Star, MapPin, Calendar } from "lucide-react";
 
@@ -17,17 +18,25 @@ export default function WishlistPage() {
   const [removing, setRemoving] = useState<number | null>(null);
 
   useEffect(() => {
+    let alive = true;
     setMounted(true);
-    const isAuthed = hasAccessToken();
-    setAuthed(isAuthed);
-    if (isAuthed) {
-      void fetchMyWishlist().then((res) => {
-        if (res.ok) setItems(res.data);
+    void (async () => {
+      await ensureSessionFresh();
+      if (!alive) return;
+      const isAuthed = hasAccessToken();
+      setAuthed(isAuthed);
+      if (!isAuthed) {
         setLoading(false);
-      });
-    } else {
+        return;
+      }
+      const res = await fetchMyWishlist();
+      if (!alive) return;
+      if (res.ok) setItems(res.data);
       setLoading(false);
-    }
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   async function onRemove(tourId: number) {

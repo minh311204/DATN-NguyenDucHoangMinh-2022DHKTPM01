@@ -38,24 +38,25 @@ function statusBadgeClass(s: BookingStatus): string {
   }
 }
 
-const PAGE_SIZE = 10;
-
 export default function AdminBookingsPage() {
   const [rows, setRows] = useState<BookingListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<"" | BookingStatus>("");
+  const [onlyPendingCancellation, setOnlyPendingCancellation] = useState(false);
 
   const load = useCallback(async () => {
     setErr(null);
     setLoading(true);
     const q: Record<string, string | undefined> = {
       page: String(page),
-      pageSize: String(PAGE_SIZE),
+      pageSize: String(pageSize),
     };
     if (statusFilter) q.status = statusFilter;
+    if (onlyPendingCancellation) q.cancellationRequestState = "PENDING";
     const res = await fetchBookings(q);
     if (res.ok) {
       const { items, total: t } = unwrapBookingList(res.data);
@@ -63,7 +64,7 @@ export default function AdminBookingsPage() {
       setTotal(t);
     } else setErr(errorMessage(res.body, res.status));
     setLoading(false);
-  }, [statusFilter, page]);
+  }, [statusFilter, onlyPendingCancellation, page, pageSize]);
 
   useEffect(() => {
     void load();
@@ -71,9 +72,7 @@ export default function AdminBookingsPage() {
 
   return (
     <>
-      <AdminHeader
-        title="Quản lý booking"
-      />
+      <AdminHeader title="Quản lý booking" />
       <main className="flex-1 space-y-4 overflow-auto p-5 sm:p-6">
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -92,6 +91,18 @@ export default function AdminBookingsPage() {
                 </option>
               ))}
             </select>
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              checked={onlyPendingCancellation}
+              onChange={(e) => {
+                setPage(1);
+                setOnlyPendingCancellation(e.target.checked);
+              }}
+              className="rounded border-slate-300"
+            />
+            Chỉ đơn chờ duyệt hủy
           </label>
           <button
             type="button"
@@ -161,11 +172,18 @@ export default function AdminBookingsPage() {
                       {formatDateTimeVi(row.bookingDateUtc ?? null)}
                     </td>
                     <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${statusBadgeClass(row.status)}`}
-                      >
-                        {labelBookingStatus(row.status)}
-                      </span>
+                      <div className="flex flex-col gap-1">
+                        <span
+                          className={`inline-flex w-fit rounded-full px-2.5 py-0.5 text-xs font-medium ${statusBadgeClass(row.status)}`}
+                        >
+                          {labelBookingStatus(row.status)}
+                        </span>
+                        {row.cancellationRequestState === "PENDING" ? (
+                          <span className="inline-flex w-fit rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
+                            Chờ duyệt hủy
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Link
@@ -182,9 +200,14 @@ export default function AdminBookingsPage() {
             </table>
             <AdminPagination
               page={page}
-              pageSize={PAGE_SIZE}
+              pageSize={pageSize}
               total={total}
+              itemsLabel="booking"
               onPageChange={setPage}
+              onPageSizeChange={(n) => {
+                setPageSize(n);
+                setPage(1);
+              }}
             />
           </div>
         )}

@@ -7,15 +7,18 @@ import { resolve } from 'path'
 import * as bcrypt from 'bcrypt'
 import { PrismaClient } from '@prisma/client'
 import { PrismaMariaDb } from '@prisma/adapter-mariadb'
+import { preferIpv4Localhost } from '../src/prisma/normalize-database-url'
 
 config({ path: resolve(process.cwd(), 'src/api/.env') })
 
-const url = process.env.DATABASE_URL
-if (!url) {
+const raw = process.env.DATABASE_URL
+if (!raw) {
   throw new Error(
     'Missing DATABASE_URL. Tạo src/api/.env với DATABASE_URL hoặc export biến môi trường.',
   )
 }
+
+const url = preferIpv4Localhost(raw)
 
 const prisma = new PrismaClient({
   adapter: new PrismaMariaDb(url),
@@ -199,6 +202,7 @@ async function main() {
         'Tour Miền Tây 4N3Đ: chợ nổi Cái Răng, Đất Mũi, Bạc Liêu, Sóc Trăng. Xe du lịch, mã NDSGN846.',
       durationDays: 4,
       basePrice: price,
+      singleRoomSupplement: 2_000_000,
       maxPeople: 45,
       tourLine: 'STANDARD',
       transportType: 'BUS',
@@ -255,6 +259,19 @@ async function main() {
     itineraries: itineraries.length,
     tags: tags.length,
   })
+
+  await prisma.promoCode.upsert({
+    where: { code: 'GIAM10' },
+    create: {
+      code: 'GIAM10',
+      percentOff: 10,
+      maxDiscountAmount: 5_000_000,
+      isActive: true,
+      tourId: null,
+    },
+    update: { isActive: true },
+  })
+  console.log('Đã upsert mã giảm giá mẫu: GIAM10 (10%, tối đa 5.000.000đ)')
 }
 
 main()

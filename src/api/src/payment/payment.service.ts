@@ -21,6 +21,7 @@ import {
 import type { PaymentStatus } from '@prisma/client'
 import { PrismaService } from '../prisma/prima.service'
 import { MailService } from './mail.service'
+import { NotificationService } from '../notification/notification.service'
 
 function num(d: unknown): number | null {
   if (d == null) return null
@@ -91,6 +92,7 @@ export class PaymentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
+    private readonly notificationService: NotificationService,
   ) {
     const tmn = process.env.VNPAY_TMN_CODE
     const secret = process.env.VNPAY_HASH_SECRET
@@ -304,7 +306,7 @@ export class PaymentService {
   /** Xác thực redirect từ VNPay (browser) — idempotent với IPN. */
   async handleVnpayReturn(
     query: Record<string, string | string[] | undefined>,
-  ): Promise<{ ok: boolean; bookingId?: number }> {
+  ): Promise<{ ok: boolean; bookingId?: number; tourId?: number }> {
     const flat = normalizeVnpQuery(query)
     const vnpay = this.getVnpay()
 
@@ -329,18 +331,19 @@ export class PaymentService {
     if (!payment) return { ok: false }
 
     const bookingId = payment.bookingId
+    const tourId = payment.booking.schedule.tour.id
 
     if (!verified.isVerified) {
-      return { ok: false, bookingId }
+      return { ok: false, bookingId, tourId }
     }
 
     if (!verified.isSuccess) {
       await this.markPaymentFailedIfPending(paymentId, flat)
-      return { ok: false, bookingId }
+      return { ok: false, bookingId, tourId }
     }
 
     if (payment.status === 'SUCCESS') {
-      return { ok: true, bookingId }
+      return { ok: true, bookingId, tourId }
     }
 
     const done = await this.tryConfirmPaymentFromVerified(
@@ -348,7 +351,7 @@ export class PaymentService {
       verified,
       payment.booking,
     )
-    return { ok: done, bookingId }
+    return { ok: done, bookingId, tourId }
   }
 
   /** IPN server-to-server — phản hồi JSON cho VNPay. */
@@ -436,6 +439,7 @@ export class PaymentService {
     verified: { vnp_Amount: number | string; vnp_TransactionNo?: number | string },
     booking: {
       id: number
+      userId: number | null
       status: string
       numberOfPeople: number
       contactEmail: string | null
@@ -533,6 +537,18 @@ export class PaymentService {
         })
         .catch((err) => {
           console.error('[payment] mail failed', err)
+        })
+    }
+
+    if (shouldSendMail && booking.userId != null) {
+      const code = `TBK${String(booking.id).padStart(6, '0')}`
+      void this.notificationService
+        .create(booking.userId, {
+          title: 'Đặt tour thành công',
+          content: `Thanh toán đã xác nhận cho tour "${booking.schedule.tour.name}". Mã đặt chỗ: ${code}.`,
+        })
+        .catch((err) => {
+          this.log.warn(`[payment] in-app notification failed: ${String(err)}`)
         })
     }
 

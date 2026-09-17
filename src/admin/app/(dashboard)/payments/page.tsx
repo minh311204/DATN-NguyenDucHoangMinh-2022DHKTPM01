@@ -35,12 +35,11 @@ function payBadgeClass(s: PaymentStatus): string {
   }
 }
 
-const PAGE_SIZE = 10;
-
 export default function AdminPaymentsPage() {
   const [rows, setRows] = useState<AdminPaymentRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<"" | PaymentStatus>("");
@@ -50,7 +49,7 @@ export default function AdminPaymentsPage() {
     setLoading(true);
     const q: Record<string, string | undefined> = {
       page: String(page),
-      pageSize: String(PAGE_SIZE),
+      pageSize: String(pageSize),
     };
     if (statusFilter) q.status = statusFilter;
     const res = await fetchAdminPayments(q);
@@ -59,7 +58,7 @@ export default function AdminPaymentsPage() {
       setTotal(res.data.total);
     } else setErr(errorMessage(res.body, res.status));
     setLoading(false);
-  }, [statusFilter, page]);
+  }, [statusFilter, page, pageSize]);
 
   useEffect(() => {
     void load();
@@ -67,9 +66,7 @@ export default function AdminPaymentsPage() {
 
   return (
     <>
-      <AdminHeader
-        title="Thanh toán"
-      />
+      <AdminHeader title="Quản lý thanh toán" />
       <main className="flex-1 space-y-4 overflow-auto p-5 sm:p-6">
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -182,9 +179,14 @@ export default function AdminPaymentsPage() {
             </table>
             <AdminPagination
               page={page}
-              pageSize={PAGE_SIZE}
+              pageSize={pageSize}
               total={total}
+              itemsLabel="giao dịch"
               onPageChange={setPage}
+              onPageSizeChange={(n) => {
+                setPageSize(n);
+                setPage(1);
+              }}
             />
           </div>
         )}

@@ -56,6 +56,14 @@ const TOUR_LINE_LABEL: Record<string, string> = {
   GOOD_VALUE: "Giá tốt",
 };
 
+/** Giá trị enum API / form tour — dùng cho `<select>` lọc dòng tour */
+export const TOUR_LINE_VALUES = [
+  "PREMIUM",
+  "STANDARD",
+  "ECONOMY",
+  "GOOD_VALUE",
+] as const;
+
 const TRANSPORT_LABEL: Record<string, string> = {
   BUS: "Xe khách",
   FLIGHT: "Máy bay",

@@ -4,12 +4,18 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { BookingStatus, Prisma } from '@prisma/client'
+import {
+  BookingStatus,
+  Prisma,
+  PrismaClient,
+} from '@prisma/client'
 import { PrismaService } from '../prisma/prima.service'
 import {
   AdminTourSchedulesOverviewQuerySchema,
   BookingListQuerySchema,
   CreateBookingSchema,
+  PreviewPromoBodySchema,
+  RejectBookingCancellationSchema,
   UpdateBookingStatusSchema,
 } from '../../../shared/schema/booking.schema'
 import type { z } from 'zod'
@@ -24,6 +30,14 @@ type AdminTourSchedulesOverviewQuery = z.infer<
 const PENDING_BOOKING_TTL_MINUTES = Number(
   process.env.BOOKING_PENDING_TTL_MINUTES ?? 30,
 )
+
+/** Phải còn ít nhất N ngày (24h) trước giờ khởi hành mới được gửi yêu cầu hủy / admin duyệt hủy (hoàn tiền). */
+const BOOKING_CANCEL_MIN_DAYS_BEFORE_DEPARTURE = Math.max(
+  0,
+  Number(process.env.BOOKING_CANCEL_MIN_DAYS_BEFORE_DEPARTURE ?? 3),
+)
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000
 
 const bookingInclude = {
   schedule: {
@@ -148,6 +162,19 @@ function assertAgeMatchesCategory(
   }
 }
 
+function assertWithinCancellationWindow(
+  departureUtc: Date,
+  atUtc: Date,
+  minDays: number,
+) {
+  if (minDays <= 0) return
+  if (departureUtc.getTime() - atUtc.getTime() < minDays * MS_PER_DAY) {
+    throw new BadRequestException(
+      `Chỉ được thực hiện khi còn ít nhất ${minDays} ngày trước giờ khởi hành.`,
+    )
+  }
+}
+
 @Injectable()
 export class BookingService {
   constructor(private readonly prisma: PrismaService) {}
@@ -220,6 +247,76 @@ export class BookingService {
     return full
   }
 
+  /**
+   * Áp dụng mã giảm giá (bảng PromoCode). `db` có thể là prisma hoặc tx transaction.
+   */
+  private async resolvePromoDiscount(
+    db: PrismaClient | Prisma.TransactionClient,
+    rawCode: string | undefined,
+    tourId: number,
+    subtotalBeforeDiscount: number,
+    now: Date,
+  ): Promise<{ discountAmount: number; codeStored: string | null }> {
+    if (!rawCode?.trim()) {
+      return { discountAmount: 0, codeStored: null }
+    }
+    const normalized = rawCode.trim().toUpperCase()
+    const promo = await db.promoCode.findFirst({
+      where: {
+        code: normalized,
+        isActive: true,
+        AND: [
+          { OR: [{ tourId: null }, { tourId }] },
+          {
+            OR: [{ validFromUtc: null }, { validFromUtc: { lte: now } }],
+          },
+          {
+            OR: [{ validToUtc: null }, { validToUtc: { gte: now } }],
+          },
+        ],
+      },
+    })
+    if (!promo) {
+      throw new BadRequestException(
+        'Mã giảm giá không hợp lệ, hết hạn hoặc không áp dụng cho tour này',
+      )
+    }
+
+    const fixed =
+      promo.fixedOff != null ? Number(promo.fixedOff) : null
+    const pct =
+      promo.percentOff != null ? Number(promo.percentOff) : null
+
+    let disc = 0
+    if (fixed != null && fixed > 0) {
+      disc = fixed
+    } else if (pct != null && pct > 0) {
+      disc = (subtotalBeforeDiscount * pct) / 100
+      if (promo.maxDiscountAmount != null) {
+        disc = Math.min(disc, Number(promo.maxDiscountAmount))
+      }
+    }
+
+    disc = Math.min(Math.max(0, disc), subtotalBeforeDiscount)
+    return {
+      discountAmount: Math.round(disc),
+      codeStored: normalized,
+    }
+  }
+
+  async previewPromo(raw: unknown) {
+    const now = new Date()
+    const body = PreviewPromoBodySchema.parse(raw)
+    const { discountAmount } = await this.resolvePromoDiscount(
+      this.prisma,
+      body.code,
+      body.tourId,
+      body.subtotalBeforeDiscount,
+      now,
+    )
+    return { discountAmount }
+  }
+
   private mapBooking(row: BookingRow, mode: 'full' | 'list' = 'full') {
     let adults = 0
     let children = 0
@@ -238,6 +335,15 @@ export class BookingService {
       bookingDateUtc: iso(row.bookingDateUtc),
       totalAmount: num(row.totalAmount),
       status: row.status,
+      discountCode: row.discountCode,
+      discountAmount: num(row.discountAmount),
+      singleRoomCount: row.singleRoomCount,
+      singleRoomSupplementAmount: num(row.singleRoomSupplementAmount),
+      cancelMinDaysBeforeDeparture: BOOKING_CANCEL_MIN_DAYS_BEFORE_DEPARTURE,
+      cancellationRequestState: row.cancellationRequestState,
+      cancellationRequestedAtUtc: iso(row.cancellationRequestedAtUtc),
+      cancellationRejectedAtUtc: iso(row.cancellationRejectedAtUtc),
+      cancellationApprovedAtUtc: iso(row.cancellationApprovedAtUtc),
       contact: {
         fullName: row.contactFullName ?? '',
         email: row.contactEmail ?? '',
@@ -295,11 +401,18 @@ export class BookingService {
             id: true,
             name: true,
             basePrice: true,
+            singleRoomSupplement: true,
+            isActive: true,
           },
         },
       },
     })
     if (!schedule) throw new NotFoundException('Tour schedule not found')
+    if (schedule.tour.isActive !== true) {
+      throw new BadRequestException(
+        'Tour không mở bán hoặc đã ngừng hiển thị',
+      )
+    }
 
     const now = new Date()
     if (schedule.startDate.getTime() < now.getTime()) {
@@ -324,10 +437,35 @@ export class BookingService {
         'Tour chưa có giá (basePrice / priceOverride). Vui lòng cập nhật trước khi đặt.',
       )
     }
-    const rawTotal =
+    const supplementPer = num(schedule.tour.singleRoomSupplement) ?? 0
+    const singleRoomCount = body.singleRoomCount ?? 0
+    const singleRoomSupplementAmount = Math.round(
+      singleRoomCount * supplementPer,
+    )
+
+    const subPassengers =
       unitPrice * adults + unitPrice * 0.5 * children + 0 * infants
+    const subtotalBeforeDiscount = subPassengers + singleRoomSupplementAmount
+
+    if (singleRoomCount > 0 && supplementPer <= 0) {
+      throw new BadRequestException(
+        'Tour chưa cấu hình phụ thu phòng đơn (singleRoomSupplement)',
+      )
+    }
+
+    const { discountAmount, codeStored } = await this.resolvePromoDiscount(
+      this.prisma,
+      body.discountCode,
+      schedule.tour.id,
+      subtotalBeforeDiscount,
+      now,
+    )
+
     /** VND nguyên — khớp thanh toán VNPay và tránh lệch .5 float */
-    const totalAmount = Math.round(rawTotal)
+    const totalAmount = Math.max(
+      0,
+      Math.round(subtotalBeforeDiscount - discountAmount),
+    )
 
     const normalizedContactEmail = body.contact.email.trim().toLowerCase()
     const duplicateActiveBooking = await this.prisma.booking.findFirst({
@@ -364,6 +502,13 @@ export class BookingService {
           tourScheduleId: body.tourScheduleId,
           numberOfPeople: totalPeople,
           totalAmount,
+          discountCode: codeStored,
+          discountAmount,
+          singleRoomCount,
+          singleRoomSupplementAmount:
+            singleRoomSupplementAmount > 0
+              ? singleRoomSupplementAmount
+              : null,
           status: 'PENDING',
           expiredAtUtc: this.bookingExpiredAtUtc(now),
           contactFullName: body.contact.fullName,
@@ -419,16 +564,95 @@ export class BookingService {
     if (row.status === 'COMPLETED') {
       throw new BadRequestException('Completed booking cannot be cancelled')
     }
+    if (row.status !== 'PENDING' && row.status !== 'CONFIRMED') {
+      throw new BadRequestException(
+        'Không thể gửi yêu cầu hủy ở trạng thái hiện tại',
+      )
+    }
+    if (row.cancellationRequestState === 'PENDING') {
+      throw new BadRequestException(
+        'Yêu cầu hủy của bạn đang chờ admin xử lý',
+      )
+    }
 
-    await this.applyStatusChange(id, row.status, 'CANCELLED', row.numberOfPeople, row.tourScheduleId)
+    assertWithinCancellationWindow(
+      row.schedule.startDate,
+      new Date(),
+      BOOKING_CANCEL_MIN_DAYS_BEFORE_DEPARTURE,
+    )
+
+    const now = new Date()
+    const updated = await this.prisma.booking.update({
+      where: { id },
+      data: {
+        cancellationRequestState: 'PENDING',
+        cancellationRequestedAtUtc: now,
+        cancellationRejectedAtUtc: null,
+        cancellationApprovedAtUtc: null,
+      },
+      include: bookingInclude,
+    })
+    return this.mapBooking(updated)
+  }
+
+  async approveBookingCancellation(id: number) {
+    const row = await this.getBookingRowById(id)
+    if (row.cancellationRequestState !== 'PENDING') {
+      throw new BadRequestException(
+        'Booking không có yêu cầu hủy đang chờ xử lý',
+      )
+    }
+    if (row.status === 'CANCELLED') return this.mapBooking(row)
+    if (row.status === 'COMPLETED') {
+      throw new BadRequestException('Booking đã hoàn tất, không thể hủy')
+    }
+
+    assertWithinCancellationWindow(
+      row.schedule.startDate,
+      new Date(),
+      BOOKING_CANCEL_MIN_DAYS_BEFORE_DEPARTURE,
+    )
+
+    await this.applyStatusChange(
+      id,
+      row.status,
+      'CANCELLED',
+      row.numberOfPeople,
+      row.tourScheduleId,
+      { recordCancellationApproval: true },
+    )
     const updated = await this.getBookingRowById(id)
     return this.mapBooking(updated)
   }
 
+  async rejectBookingCancellation(id: number, raw: unknown) {
+    const body = RejectBookingCancellationSchema.parse(raw)
+    void body.reason
+    const row = await this.getBookingRowById(id)
+    if (row.cancellationRequestState !== 'PENDING') {
+      throw new BadRequestException(
+        'Booking không có yêu cầu hủy đang chờ xử lý',
+      )
+    }
+
+    const updated = await this.prisma.booking.update({
+      where: { id },
+      data: {
+        cancellationRequestState: 'REJECTED',
+        cancellationRejectedAtUtc: new Date(),
+      },
+      include: bookingInclude,
+    })
+    return this.mapBooking(updated)
+  }
+
   async getBookings(query: BookingListQuery) {
-    const where = {
+    const where: Prisma.BookingWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.userId != null ? { userId: query.userId } : {}),
+      ...(query.cancellationRequestState
+        ? { cancellationRequestState: query.cancellationRequestState }
+        : {}),
     }
     const paginate = query.page != null || query.pageSize != null
     if (paginate) {
@@ -659,14 +883,30 @@ export class BookingService {
     newStatus: BookingStatus,
     numberOfPeople: number,
     scheduleId: number,
+    cancelOpts?: { recordCancellationApproval?: boolean },
   ) {
     await this.prisma.$transaction(async (tx) => {
+      const cancelPatch: Prisma.BookingUpdateInput = {}
+      if (newStatus === 'CANCELLED') {
+        if (cancelOpts?.recordCancellationApproval) {
+          cancelPatch.cancellationRequestState = 'NONE'
+          cancelPatch.cancellationApprovedAtUtc = new Date()
+          cancelPatch.cancellationRejectedAtUtc = null
+        } else {
+          cancelPatch.cancellationRequestState = 'NONE'
+          cancelPatch.cancellationRequestedAtUtc = null
+          cancelPatch.cancellationRejectedAtUtc = null
+          cancelPatch.cancellationApprovedAtUtc = null
+        }
+      }
+
       await tx.booking.update({
         where: { id: bookingId },
         data: {
           status: newStatus,
           expiredAtUtc:
             newStatus === 'PENDING' ? this.bookingExpiredAtUtc() : null,
+          ...cancelPatch,
         },
       })
 

@@ -101,4 +101,5 @@ Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
 
 ## Internal Docs
 
+- `docs/huong-dan-cai-dat-datn.md`: Hướng dẫn cài đặt server/client (tiếng Việt, định dạng báo cáo ĐATN).
 - `docs/booking-payment.md`: Booking + Payment (VNPay) flow, env, and operations.

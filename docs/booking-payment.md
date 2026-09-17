@@ -109,8 +109,11 @@ Xử lý:
 - Verify chữ ký query trả về từ VNPay.
 - Nếu success: xác nhận payment/booking (idempotent).
 - Redirect về user app:
-  - success: `{USER_APP_PUBLIC_URL}/bookings?payment=success&bookingId=...`
-  - fail: `{USER_APP_PUBLIC_URL}/checkout?payment=failed&bookingId=...`
+  - success: `{USER_APP_PUBLIC_URL}/book/{tourId}?payment=success&bookingId=...` — màn ĐẶT TOUR (thông báo + stepper HOÀN TẤT), sau vài giây về trang chủ `/`
+  - nếu không có `tourId`: fallback `/?payment=success&bookingId=...`
+  - fail: `/bookings?payment=failed&bookingId=...`
+  - lỗi xử lý return: `/bookings?payment=error`
+- Route `/checkout` (bookmark cũ): redirect sang `/bookings` cùng query.
 
 ### 3.3 VNPay IPN (server-to-server)
 

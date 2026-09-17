@@ -27,10 +27,89 @@ export type BookingConfirmationPayload = {
 export class MailService {
   private readonly log = new Logger(MailService.name)
 
-  async sendBookingPaidConfirmation(payload: BookingConfirmationPayload): Promise<void> {
+  /** Gửi qua SMTP (SendGrid) hoặc ghi log nếu chưa cấu hình. */
+  private async sendOrLogEmail(opts: {
+    to: string
+    subject: string
+    text: string
+    html: string
+  }): Promise<void> {
     const host = process.env.SMTP_HOST
     const from = process.env.SMTP_FROM ?? process.env.SMTP_USER ?? 'noreply@localhost'
 
+    if (!host) {
+      this.log.warn(
+        `SMTP_HOST chưa cấu hình — ghi log thay vì gửi email tới ${opts.to}`,
+      )
+      this.log.log(`[email preview subject=${opts.subject}]\n${opts.text}`)
+      return
+    }
+
+    const port = Number(process.env.SMTP_PORT) || 587
+    const secure = process.env.SMTP_SECURE === 'true'
+    const user = process.env.SMTP_USER
+    const pass = process.env.SMTP_PASS
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: user && pass ? { user, pass } : undefined,
+    })
+
+    await transporter.sendMail({
+      from,
+      to: opts.to,
+      subject: opts.subject,
+      text: opts.text,
+      html: opts.html,
+    })
+  }
+
+  async sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
+    const subject = '[TourBooking] Đặt lại mật khẩu'
+    const text = [
+      `Xin chào,`,
+      ``,
+      `Bạn (hoặc ai đó) đã yêu cầu đặt lại mật khẩu cho tài khoản TourBooking.`,
+      `Mở liên kết sau (có hiệu lực trong 1 giờ):`,
+      resetUrl,
+      ``,
+      `Nếu bạn không yêu cầu, vui lòng bỏ qua email này.`,
+    ].join('\n')
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#222;max-width:560px;">
+        <p>Xin chào,</p>
+        <p>Bạn đã yêu cầu đặt lại mật khẩu. Nhấn nút bên dưới (hiệu lực trong 1 giờ):</p>
+        <p><a href="${escapeHtml(resetUrl)}" style="display:inline-block;padding:10px 18px;background:#0d9488;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Đặt lại mật khẩu</a></p>
+        <p style="font-size:13px;color:#666;">Hoặc copy liên kết: ${escapeHtml(resetUrl)}</p>
+        <p style="font-size:13px;color:#666;">Nếu bạn không yêu cầu, hãy bỏ qua email này.</p>
+      </div>`
+    await this.sendOrLogEmail({ to, subject, text, html })
+  }
+
+  async sendEmailVerificationEmail(to: string, verifyUrl: string): Promise<void> {
+    const subject = '[TourBooking] Xác nhận đăng ký tài khoản'
+    const text = [
+      `Xin chào,`,
+      ``,
+      `Cảm ơn bạn đã đăng ký TourBooking.`,
+      `Vui lòng mở liên kết sau để kích hoạt tài khoản (hiệu lực trong 24 giờ):`,
+      verifyUrl,
+      ``,
+      `Nếu bạn không đăng ký, vui lòng bỏ qua email này.`,
+    ].join('\n')
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#222;max-width:560px;">
+        <p>Xin chào,</p>
+        <p>Cảm ơn bạn đã đăng ký. Nhấn nút để xác nhận email và kích hoạt tài khoản (24 giờ):</p>
+        <p><a href="${escapeHtml(verifyUrl)}" style="display:inline-block;padding:10px 18px;background:#0d9488;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Xác nhận email</a></p>
+        <p style="font-size:13px;color:#666;">Hoặc copy liên kết: ${escapeHtml(verifyUrl)}</p>
+      </div>`
+    await this.sendOrLogEmail({ to, subject, text, html })
+  }
+
+  async sendBookingPaidConfirmation(payload: BookingConfirmationPayload): Promise<void> {
     const subject = `[Tour] Xác nhận đặt tour thành công — Mã #${payload.bookingId}`
     const departureText = formatDateTimeVn(payload.departureDate)
     const endText =
@@ -193,28 +272,7 @@ export class MailService {
       </div>
     `
 
-    if (!host) {
-      this.log.warn(
-        `SMTP_HOST chưa cấu hình — ghi log thay vì gửi email tới ${payload.to}`,
-      )
-      this.log.log(`[email preview]\n${text}`)
-      return
-    }
-
-    const port = Number(process.env.SMTP_PORT) || 587
-    const secure = process.env.SMTP_SECURE === 'true'
-    const user = process.env.SMTP_USER
-    const pass = process.env.SMTP_PASS
-
-    const transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure,
-      auth: user && pass ? { user, pass } : undefined,
-    })
-
-    await transporter.sendMail({
-      from,
+    await this.sendOrLogEmail({
       to: payload.to,
       subject,
       text,

@@ -81,6 +81,84 @@ const SLOT_EXTRACTION_SCHEMA = {
   ],
 } as const
 
+/** Mặc định: gpt-5.4-mini (có thể ghi đè bằng OPENAI_MODEL / OPENAI_REPLY_MODEL) */
+const DEFAULT_OPENAI_MODEL = 'gpt-5.4-mini'
+
+/**
+ * Prompt guidance (GPT-5.4 / mini): quy tắc quan trọng trước, hợp đồng đầu ra, grounding, xử lý mơ hồ.
+ * @see https://developers.openai.com/api/docs/guides/prompt-guidance
+ */
+const SLOT_EXTRACTION_SYSTEM = [
+  '<role>Bạn là tầng trích xuất tham số (slot) cho chatbot gợi ý tour du lịch Việt Nam. Bạn không trò chuyện với người dùng; chỉ chuẩn bị dữ liệu có cấu trúc cho hệ thống.</role>',
+  '',
+  '<critical_rules>',
+  '1) CHỈ điền giá trị khi chúng xuất hiện rõ ràng trong hội thoại (các lượt user/assistant đã cho) hoặc trong "Tin nhắn mới". Không bịa địa danh, giá, số ngày, số khách.',
+  '2) Không chắc → dùng null cho field đó (schema bắt buộc vẫn trả đủ key theo JSON Schema).',
+  '3) Tiền tệ: luôn VND, số nguyên (vd. 5 triệu → 5000000).',
+  '</critical_rules>',
+  '',
+  '<instruction_priority>',
+  'Nếu tin nhắn mới mâu thuẫn với tin cũ về số ngày, ngân sách, điểm đến/đi, số khách → ưu tiên tin nhắn mới.',
+  'Nếu tin nhắn mới chỉ bổ sung (vd. thêm ngày/ngân sách) mà không đổi điểm đến → giữ ràng buộc địa danh/vùng từ các lượt trước khi vẫn còn nhất quán.',
+  '</instruction_priority>',
+  '',
+  '<grounding_rules>',
+  'destination / departure: chỉ tên địa danh hoặc vùng người dùng đã nêu; không suy diễn tour cụ thể.',
+  'keywords: từ khóa ngắn (tối đa 8) phục vụ tìm kiếm, không trùng nghĩa destination nếu không cần.',
+  '</grounding_rules>',
+  '',
+  '<userIntent>',
+  'recommend: muốn gợi ý/chọn/xem tour.',
+  'faq: chính sách, thanh toán, giấy tờ, hủy đổi, trẻ em, bảo hiểm…',
+  'booking: đặt tour / giữ chỗ / book.',
+  'other: không thuộc tư vấn/đặt tour du lịch trong phạm vi sản phẩm.',
+  '</userIntent>',
+  '',
+  '<budget_hints>',
+  '"X triệu" → nhân 1_000_000. "dưới X triệu" → budgetMax. "trên X triệu" → budgetMin. Khoảng hai đầu số → budgetMin và budgetMax.',
+  '</budget_hints>',
+  '',
+  '<output_contract>',
+  'Tuân thủ đúng JSON Schema (structured output). Không thêm giải thích ngoài JSON.',
+  '</output_contract>',
+].join('\n')
+
+const SLOT_EXTRACTION_LEGACY_SYSTEM = [
+  '<role>Trích xuất slot cho hệ thống gợi ý tour Việt Nam. Chỉ trả về một object JSON, không prose.</role>',
+  '<critical_rules>Không bịa địa danh hay số tiền. null khi không chắc. VND là số nguyên.</critical_rules>',
+  '<instruction_priority>Tin nhắn mới ưu tiên hơn tin cũ nếu mâu thuẫn về ngày/giá/địa điểm.</instruction_priority>',
+  '<userIntent>recommend | faq | booking | other</userIntent>',
+].join('\n')
+
+const RECOMMENDATION_REPLY_SYSTEM = [
+  '<role>Bạn là nhân viên tư vấn tour du lịch Việt Nam. Xưng "mình". Giọng thân thiện, súc tích.</role>',
+  '',
+  '<critical_rules>',
+  '1) CHỈ mô tả tour dựa trên mảng "danh_sach_tour" trong JSON user. Không thêm tour, giá, điểm đến không có trong mảng.',
+  '2) Mọi giá (đ) và tên tour phải khớp một phần tử trong danh_sach_tour (có thể diễn đạt lại ngắn, không đổi số).',
+  '3) Đọc "ghi_chu_khop_tim_kiem": nếu khop_tim_kiem=false thì phải nói rõ đây là gợi ý tham khảo/nổi bật vì không có kết quả khớp bộ lọc; không nói "đã tìm thấy tour phù hợp nhất" theo bộ lọc.',
+  '4) Nếu khop_tim_kiem=true có thể nói đã có vài lựa chọn phù hợp theo dữ liệu hệ thống.',
+  '</critical_rules>',
+  '',
+  '<grounding_rules>',
+  'Không đưa link, mã, giảm giá, chính sách chi tiết trừ khi nằm trong fallback_neu_loi hoặc dữ liệu cho phép.',
+  'Nếu danh_sach_tour rỗng: an toàn nhất là nhắc theo fallback_neu_loi, không bịa tour.',
+  '</grounding_rules>',
+  '',
+  '<instruction_priority>',
+  'Ưu tiên ý trong tin_nhan_khach và lịch sử (nếu có). Chỉ dẫn mới hơn ghi đè chi tiết cũ khi trùng chủ đề.',
+  '</instruction_priority>',
+  '',
+  '<verification_loop>',
+  'Trước khi trả lời: (1) Mỗi tour nhắc tên có trong danh_sach_tour? (2) Giá khớp đúng gia_vnd của tour đó? (3) Lời thoại có mâu thuẫn khop_tim_kiem/ghi_chu_khop_tim_kiem không? Nếu có thì sửa.',
+  '</verification_loop>',
+  '',
+  '<style>',
+  '3–6 câu, không bullet dài. Kết thúc bằng một câu hỏi gợi ý tiếp; ưu tiên dùng ý từ cau_hoi_tiep nếu có, diễn đạt tự nhiên.',
+  'Không mở đầu bằng "Dạ", "Okay", "Great question". Vào thẳng nội dung hữu ích.',
+  '</style>',
+].join('\n')
+
 function getClient() {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) return null
@@ -94,6 +172,21 @@ export function isLlmEnabled() {
 /** Bật sinh câu trả lời tự nhiên (B): cần API key; tắt: OPENAI_NATURAL_REPLY=0 */
 export function isNaturalReplyEnabled() {
   return isLlmEnabled() && process.env.OPENAI_NATURAL_REPLY !== '0'
+}
+
+function parseReplyTemperature(): number {
+  const raw = process.env.OPENAI_REPLY_TEMPERATURE
+  if (raw === undefined || raw === '') return 0.45
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.min(2, Math.max(0, n)) : 0.45
+}
+
+/** Số lượt user/assistant gửi kèm khi sinh reply (không tính payload JSON cuối). */
+function replyHistoryTurnLimit(): number {
+  const raw = process.env.OPENAI_REPLY_HISTORY_TURNS
+  if (raw === undefined || raw === '') return 10
+  const n = parseInt(raw, 10)
+  return Number.isFinite(n) && n >= 0 ? Math.min(24, n) : 10
 }
 
 function nullToUndefined<T>(v: T | null | undefined): T | undefined {
@@ -134,21 +227,13 @@ async function extractSlotsWithLlmStructured(client: OpenAI, input: {
   message: string
   conversation?: { role: 'user' | 'assistant'; content: string }[]
 }): Promise<LlmExtractedSlots | null> {
-  const system = [
-    'Bạn là trợ lý trích xuất thông tin cho hệ thống gợi ý tour du lịch Việt Nam.',
-    'Chỉ điền field khi có trong hội thoại; không bịa địa danh hay số tiền. Dùng null cho field không chắc.',
-    'userIntent: recommend=gợi ý/chọn tour; booking=đặt/giữ chỗ; faq=chính sách/thanh toán/giấy tờ; other=không liên quan.',
-    'Ngân sách: VND (số). "5 triệu" → budgetMax 5000000 hoặc khoảng min/max tùy ngữ cảnh.',
-    'keywords: từ khóa ngắn để search, tối đa 8.',
-  ].join('\n')
-
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: 'system', content: system },
+    { role: 'system', content: SLOT_EXTRACTION_SYSTEM },
     ...(input.conversation ?? []).slice(-8).map((m) => ({ role: m.role, content: m.content })),
     { role: 'user', content: `Tin nhắn mới:\n${input.message}` },
   ]
 
-  const model = process.env.OPENAI_MODEL ?? 'gpt-4o-mini'
+  const model = process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL
 
   const res = await client.chat.completions.create({
     model,
@@ -178,14 +263,6 @@ async function extractSlotsWithLlmLegacyJsonObject(client: OpenAI, input: {
   message: string
   conversation?: { role: 'user' | 'assistant'; content: string }[]
 }): Promise<LlmExtractedSlots | null> {
-  const system = [
-    'Bạn là trợ lý trích xuất thông tin cho hệ thống gợi ý tour du lịch Việt Nam.',
-    'Nhiệm vụ: đọc hội thoại và tin nhắn mới, trả về JSON thuần.',
-    'Không bịa địa danh/số tiền. Nếu không chắc, để null hoặc bỏ field.',
-    'userIntent: recommend | faq | booking | other (theo hướng dẫn schema).',
-    'Ngân sách: VND (number).',
-  ].join('\n')
-
   const schemaHint = {
     userIntent: 'recommend | faq | booking | other',
     destination: 'string | null',
@@ -202,7 +279,7 @@ async function extractSlotsWithLlmLegacyJsonObject(client: OpenAI, input: {
   }
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: 'system', content: system },
+    { role: 'system', content: SLOT_EXTRACTION_LEGACY_SYSTEM },
     ...(input.conversation ?? []).slice(-8).map((m) => ({ role: m.role, content: m.content })),
     {
       role: 'user',
@@ -210,7 +287,7 @@ async function extractSlotsWithLlmLegacyJsonObject(client: OpenAI, input: {
     },
   ]
 
-  const model = process.env.OPENAI_MODEL ?? 'gpt-4o-mini'
+  const model = process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL
 
   const res = await client.chat.completions.create({
     model,
@@ -267,6 +344,7 @@ export type TourBriefForReply = {
 
 /**
  * (B) Sinh câu trả lời tự nhiên dựa trên tour đã lấy từ DB; không bịa giá/tên ngoài danh sách.
+ * `conversation`: các lượt trước tin nhắn hiện tại (ngữ cảnh hội thoại); tin hiện tại nằm trong payload.
  * Trả về null nếu tắt LLM hoặc lỗi → caller dùng fallbackReply.
  */
 export async function generateRecommendationReplyNatural(input: {
@@ -276,13 +354,15 @@ export async function generateRecommendationReplyNatural(input: {
   tours: TourBriefForReply[]
   matched: boolean
   personalized: boolean
+  /** Lịch sử user/assistant trước tin hiện tại — để trả lời mạch lạc với câu hỏi trước đó */
+  conversation?: { role: 'user' | 'assistant'; content: string }[]
 }): Promise<string | null> {
   if (!isNaturalReplyEnabled()) return null
 
   const client = getClient()
   if (!client) return null
 
-  const model = process.env.OPENAI_REPLY_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini'
+  const model = process.env.OPENAI_REPLY_MODEL ?? process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL
 
   const toursJson = input.tours.map((t) => ({
     ten: t.name,
@@ -293,29 +373,29 @@ export async function generateRecommendationReplyNatural(input: {
     slug: t.slug ?? null,
   }))
 
-  const system = [
-    'Bạn là nhân viên tư vấn tour du lịch Việt Nam, xưng "mình", văn phong thân thiện, ngắn gọn.',
-    'CHỈ dùng thông tin tour trong mảng "danh_sach_tour" do hệ thống cung cấp. Không bịa giá, không thêm tour không có trong mảng.',
-    'Nếu matched=false: nói rõ đang gửi tour tham khảo / nổi bật vì chưa khớp hoàn toàn (theo gợi ý).',
-    'Luôn kết thúc bằng câu hỏi gợi ý tiếp (dùng nội dung "cau_hoi_tiep" nếu có, có thể diễn đạt lại tự nhiên).',
-    'Độ dài khoảng 3–6 câu, không liệt kê bullet dài.',
-  ].join('\n')
-
+  // ghi_chu_khop_tim_kiem: làm rõ ý nghĩa khop_tim_kiem cho gpt-5.4-mini (grounding theo tài liệu prompt guidance)
   const userPayload = {
     tin_nhan_khach: input.userMessage,
     khop_tim_kiem: input.matched,
+    ghi_chu_khop_tim_kiem: input.matched
+      ? 'true: các tour trong danh_sach_tour là kết quả tìm theo bộ lọc (có ít nhất một tour thỏa điều kiện search).'
+      : 'false: không có tour thỏa bộ lọc; danh_sach_tour đang là gợi ý nổi bật/tham khảo — không khẳng định khớp từng tiêu chí (ngày/giá/vùng).',
     goi_y_ca_nhan: input.personalized,
     cau_hoi_tiep: input.followUps.trim() || null,
     fallback_neu_loi: input.fallbackReply,
     danh_sach_tour: toursJson,
   }
 
+  const prior = (input.conversation ?? []).slice(-replyHistoryTurnLimit())
+  const replyTemp = parseReplyTemperature()
+
   const res = await client.chat.completions.create({
     model,
-    temperature: 0.45,
+    temperature: replyTemp,
     max_tokens: 450,
     messages: [
-      { role: 'system', content: system },
+      { role: 'system', content: RECOMMENDATION_REPLY_SYSTEM },
+      ...prior.map((m) => ({ role: m.role, content: m.content })),
       {
         role: 'user',
         content: `Dữ liệu JSON (dùng để trả lời, không trích nguyên văn JSON cho khách):\n${JSON.stringify(userPayload, null, 0)}`,

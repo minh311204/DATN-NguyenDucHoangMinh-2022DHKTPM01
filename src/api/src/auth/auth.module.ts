@@ -5,6 +5,7 @@ import { AuthService } from './auth.service'
 import { AuthController } from './auth.controller'
 import { JwtStrategy } from './strategies/jwt.strategy'
 import { PrismaModule } from '../prisma/prima.module'
+import { MailModule } from '../mail/mail.module'
 
 const jwtSecret = process.env.JWT_SECRET
 if (!jwtSecret) {
@@ -14,6 +15,7 @@ if (!jwtSecret) {
 @Module({
   imports: [
     PrismaModule,
+    MailModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
       secret: jwtSecret,

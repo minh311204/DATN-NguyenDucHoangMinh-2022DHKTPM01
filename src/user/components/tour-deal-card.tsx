@@ -80,14 +80,14 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
   const gradient = pickGradient(tour.id);
 
   return (
-    <article className="flex h-full w-full max-w-[320px] flex-col overflow-hidden rounded-xl border border-stone-200/80 bg-white shadow-sm ring-1 ring-black/[0.03] sm:max-w-none">
+    <article className="group flex h-full w-full max-w-[320px] flex-col overflow-hidden rounded-xl border border-stone-200/80 bg-white shadow-sm ring-1 ring-black/[0.03] transition duration-300 ease-out hover:-translate-y-1 hover:shadow-lg hover:ring-black/[0.06] sm:max-w-none">
       <div className="relative h-[168px] shrink-0 overflow-hidden bg-stone-100 sm:h-[180px]">
         {tour.thumbnailUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={tour.thumbnailUrl}
             alt=""
-            className="h-full w-full object-cover"
+            className="h-full w-full object-cover transition duration-500 ease-out group-hover:scale-105"
           />
         ) : (
           <div
@@ -122,6 +122,18 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
           <Tag className="h-3 w-3 shrink-0" />
           {tourCode}
         </p>
+        {tour.tags && tour.tags.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {tour.tags.map((tg) => (
+              <span
+                key={tg.id}
+                className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-medium text-violet-800 ring-1 ring-violet-100"
+              >
+                {tg.name}
+              </span>
+            ))}
+          </div>
+        ) : null}
 
         <div className="mt-2 space-y-1.5 text-[11px] text-stone-600 sm:text-xs">
           <p className="flex items-start gap-1.5">
@@ -172,7 +184,7 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
           </div>
           <Link
             href={`/tours/${id}`}
-            className="shrink-0 rounded border border-red-500 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-50"
+            className="shrink-0 rounded border border-red-500 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 transition duration-200 hover:bg-red-50 active:scale-[0.98]"
           >
             Đặt ngay
           </Link>

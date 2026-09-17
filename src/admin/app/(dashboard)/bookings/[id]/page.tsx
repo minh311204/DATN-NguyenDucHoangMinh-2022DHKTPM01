@@ -6,7 +6,12 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Save } from "lucide-react";
 import { AdminHeader } from "@/components/admin-header";
 import type { BookingDetail, BookingStatus } from "@/lib/api-types";
-import { fetchBookingById, updateBookingStatus } from "@/lib/admin-api";
+import {
+  approveBookingCancellation,
+  fetchBookingById,
+  rejectBookingCancellation,
+  updateBookingStatus,
+} from "@/lib/admin-api";
 import {
   errorMessage,
   formatDateTimeVi,
@@ -38,6 +43,9 @@ export default function AdminBookingDetailPage() {
   const [loading, setLoading] = useState(true);
   const [nextStatus, setNextStatus] = useState<BookingStatus | "">("");
   const [saving, setSaving] = useState(false);
+  const [cancelAction, setCancelAction] = useState<"approve" | "reject" | null>(
+    null,
+  );
 
   const load = useCallback(async () => {
     if (!Number.isFinite(id) || id < 1) {
@@ -69,6 +77,36 @@ export default function AdminBookingDetailPage() {
     setErr(null);
     const res = await updateBookingStatus(booking.id, { status: nextStatus });
     setSaving(false);
+    if (!res.ok) {
+      setErr(errorMessage(res.body, res.status));
+      return;
+    }
+    setBooking(res.data);
+    router.refresh();
+  }
+
+  async function onApproveCancellation(e: React.FormEvent) {
+    e.preventDefault();
+    if (!booking) return;
+    setCancelAction("approve");
+    setErr(null);
+    const res = await approveBookingCancellation(booking.id);
+    setCancelAction(null);
+    if (!res.ok) {
+      setErr(errorMessage(res.body, res.status));
+      return;
+    }
+    setBooking(res.data);
+    router.refresh();
+  }
+
+  async function onRejectCancellation(e: React.FormEvent) {
+    e.preventDefault();
+    if (!booking) return;
+    setCancelAction("reject");
+    setErr(null);
+    const res = await rejectBookingCancellation(booking.id, {});
+    setCancelAction(null);
     if (!res.ok) {
       setErr(errorMessage(res.body, res.status));
       return;
@@ -141,6 +179,75 @@ export default function AdminBookingDetailPage() {
                   </button>
                 </form>
               </section>
+
+              {booking.cancellationRequestState === "PENDING" ? (
+                <section className="rounded-xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+                  <h2 className="text-sm font-semibold text-amber-950">
+                    Yêu cầu hủy từ khách
+                  </h2>
+                  <p className="mt-2 text-sm text-amber-950/90">
+                    Gửi lúc:{" "}
+                    <strong>
+                      {formatDateTimeVi(booking.cancellationRequestedAtUtc ?? null)}
+                    </strong>
+                    . Chỉ chấp nhận hủy có điều kiện hoàn tiền khi thời điểm duyệt vẫn còn ít nhất{" "}
+                    <strong>{booking.cancelMinDaysBeforeDeparture} ngày</strong> trước giờ
+                    khởi hành.
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <form onSubmit={onApproveCancellation}>
+                      <button
+                        type="submit"
+                        disabled={cancelAction !== null}
+                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                      >
+                        {cancelAction === "approve"
+                          ? "Đang xử lý…"
+                          : "Chấp nhận hủy"}
+                      </button>
+                    </form>
+                    <form onSubmit={onRejectCancellation}>
+                      <button
+                        type="submit"
+                        disabled={cancelAction !== null}
+                        className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-950 hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        {cancelAction === "reject"
+                          ? "Đang xử lý…"
+                          : "Từ chối yêu cầu"}
+                      </button>
+                    </form>
+                  </div>
+                </section>
+              ) : null}
+
+              {booking.status === "CANCELLED" && booking.cancellationApprovedAtUtc ? (
+                <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <h2 className="text-sm font-semibold text-slate-800">
+                    Hủy &amp; hoàn tiền (theo yêu cầu)
+                  </h2>
+                  <p className="mt-2 text-sm text-slate-600">
+                    Admin đã chấp nhận hủy lúc{" "}
+                    <strong>
+                      {formatDateTimeVi(booking.cancellationApprovedAtUtc)}
+                    </strong>
+                    . Khách gửi yêu cầu lúc{" "}
+                    {formatDateTimeVi(booking.cancellationRequestedAtUtc ?? null)}.
+                  </p>
+                </section>
+              ) : null}
+
+              {booking.cancellationRequestState === "REJECTED" ? (
+                <section className="rounded-xl border border-red-100 bg-red-50/60 p-5 shadow-sm">
+                  <h2 className="text-sm font-semibold text-red-900">
+                    Yêu cầu hủy đã bị từ chối
+                  </h2>
+                  <p className="mt-2 text-sm text-red-900/85">
+                    Thời điểm từ chối:{" "}
+                    {formatDateTimeVi(booking.cancellationRejectedAtUtc ?? null)}
+                  </p>
+                </section>
+              ) : null}
 
               <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-800">Tour</h2>

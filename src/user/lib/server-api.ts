@@ -96,6 +96,21 @@ export function fetchTourById(id: number, init?: NextFetch) {
   return apiGet<TourDetail>(`/tours/${id}`, init);
 }
 
+export type TourTagPublic = {
+  id: number;
+  name: string;
+  description?: string | null;
+  tourCount?: number;
+};
+
+/** GET /tours/tags — công khai */
+export function fetchTourTags(
+  query: Record<string, string | undefined> = {},
+  init?: NextFetch,
+) {
+  return apiGet<TourTagPublic[]>(`/tours/tags${buildQuery(query)}`, init);
+}
+
 export function fetchLocations(init?: NextFetch) {
   return apiGet<LocationRow[]>(`/locations/locations`, init);
 }

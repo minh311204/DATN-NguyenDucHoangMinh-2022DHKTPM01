@@ -6,6 +6,7 @@ import { Settings2, TrendingUp } from "lucide-react";
 import { fetchMyPreference, upsertMyPreference, fetchRecommendations } from "@/lib/client-preference";
 import type { UserPreference, TourListItem } from "@/lib/api-types";
 import { hasAccessToken } from "@/lib/auth-storage";
+import { ensureSessionFresh } from "@/lib/client-auth";
 import { TourCard } from "@/components/tour-card";
 import { errorMessage } from "@/lib/format";
 
@@ -41,27 +42,35 @@ export default function PreferencesPage() {
   const [preferredLocations, setPreferredLocations] = useState<string>("");
 
   useEffect(() => {
+    let alive = true;
     setMounted(true);
-    const isAuthed = hasAccessToken();
-    setAuthed(isAuthed);
-    if (isAuthed) {
-      Promise.all([
+    void (async () => {
+      await ensureSessionFresh();
+      if (!alive) return;
+      const isAuthed = hasAccessToken();
+      setAuthed(isAuthed);
+      if (!isAuthed) {
+        setLoading(false);
+        return;
+      }
+      const [prefRes, recRes] = await Promise.all([
         fetchMyPreference(),
         fetchRecommendations(8),
-      ]).then(([prefRes, recRes]) => {
-        if (prefRes.ok && prefRes.data) {
-          const p = prefRes.data;
-          setPref(p);
-          setBudgetRange(p.budgetRange ?? "");
-          setTravelStyle(p.travelStyle ?? "");
-          setPreferredLocations(p.preferredLocations ?? "");
-        }
-        if (recRes.ok) setRecommendations(recRes.data);
-        setLoading(false);
-      });
-    } else {
+      ]);
+      if (!alive) return;
+      if (prefRes.ok && prefRes.data) {
+        const p = prefRes.data;
+        setPref(p);
+        setBudgetRange(p.budgetRange ?? "");
+        setTravelStyle(p.travelStyle ?? "");
+        setPreferredLocations(p.preferredLocations ?? "");
+      }
+      if (recRes.ok) setRecommendations(recRes.data);
       setLoading(false);
-    }
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   async function onSave(e: React.FormEvent) {

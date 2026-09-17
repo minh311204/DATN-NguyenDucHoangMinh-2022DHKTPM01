@@ -1,0 +1,9 @@
+allowBuilds:
+  '@parcel/watcher': set this to true or false
+  '@prisma/engines': set this to true or false
+  bcrypt: set this to true or false
+  core-js: set this to true or false
+  es5-ext: set this to true or false
+  prisma: set this to true or false
+  uglifyjs-webpack-plugin: set this to true or false
+  unrs-resolver: set this to true or false

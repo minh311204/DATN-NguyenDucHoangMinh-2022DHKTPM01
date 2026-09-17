@@ -5,11 +5,24 @@ import { z } from 'zod'
 export const TourTagResponseSchema = z.object({
   id: z.number(),
   name: z.string(),
+  description: z.string().nullable().optional(),
+  /** Số tour đang gắn danh mục (chỉ một số API trả về) */
+  tourCount: z.number().int().nonnegative().optional(),
 })
 
 export const CreateTourTagSchema = z.object({
   name: z.string().min(1),
+  description: z.string().max(20000).nullable().optional(),
 })
+
+export const UpdateTourTagSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    description: z.string().max(20000).nullable().optional(),
+  })
+  .refine((d) => d.name !== undefined || d.description !== undefined, {
+    message: 'Cần ít nhất một trường để cập nhật',
+  })
 
 /** ========================= Media ========================= */
 
@@ -274,6 +287,12 @@ export const TourListItemSchema = z.object({
   createdAtUtc: z.string().nullable().optional(),
   departureLocation: LocationBriefSchema.optional(),
   destinationLocation: LocationBriefSchema.optional(),
+  /** Nhãn danh mục (TourTag) gắn tour — có trong response list khi API include */
+  tags: z
+    .array(
+      TourTagResponseSchema.omit({ tourCount: true }),
+    )
+    .optional(),
 })
 
 export const TourDetailResponseSchema = z.object({
@@ -297,6 +316,8 @@ export const TourDetailResponseSchema = z.object({
   inclusions: z.string().nullable().optional(),
   exclusions: z.string().nullable().optional(),
   cancellationPolicy: z.string().nullable().optional(),
+  /** Phụ thu phòng đơn (VND / suất) */
+  singleRoomSupplement: z.number().nullable().optional(),
   departureLocation: LocationBriefSchema.optional(),
   destinationLocation: LocationBriefSchema.optional(),
   images: z.array(TourImageResponseSchema),
@@ -370,6 +391,8 @@ export const TourListQuerySchema = z.object({
     .optional(),
   tourLine: TourLineSchema.optional(),
   transportType: TransportTypeSchema.optional(),
+  /** Chỉ tour đang gắn TourTag này */
+  tagId: z.coerce.number().int().optional(),
   /** Chỉ lấy tour gắn cờ nổi bật (Tour nổi bật) */
   featured: z.enum(['true', 'false']).optional(),
   /** Phân trang — khi gửi `page` hoặc `pageSize`, API trả về `{ items, total, page, pageSize }` thay vì mảng */

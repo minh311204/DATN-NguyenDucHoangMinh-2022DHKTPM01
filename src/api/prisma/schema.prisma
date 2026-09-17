@@ -33,6 +33,13 @@ enum BookingStatus {
   COMPLETED
 }
 
+/// Yêu cầu hủy booking (chờ admin xử lý / từ chối)
+enum BookingCancellationRequestState {
+  NONE
+  PENDING
+  REJECTED
+}
+
 enum PaymentStatus {
   PENDING
   SUCCESS
@@ -99,11 +106,14 @@ model User {
   id Int @id @default(autoincrement())
 
   email        String @unique
-  phone        String?
+  phone        String? @unique
   passwordHash String
 
   firstName String?
   lastName  String?
+
+  dateOfBirth DateTime?
+  avatar      String?
 
   status UserStatus @default(INACTIVE)
   role   Role       @default(USER)
@@ -125,6 +135,7 @@ model User {
   // relations
   refreshTokens RefreshToken[]
   resetTokens   ResetPasswordToken[]
+  emailVerificationTokens EmailVerificationToken[]
   oauthAccounts OAuthAccount[]
 
   bookings      Booking[]
@@ -173,6 +184,18 @@ model ResetPasswordToken {
   isSentEmail Boolean @default(false)
 
   user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model EmailVerificationToken {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  token  String @unique
+  expiredDateTimeUtc DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
 }
@@ -269,11 +292,15 @@ model Tour {
   /// Chính sách hủy tour
   cancellationPolicy String? @db.Text
 
+  /// Phụ thu phòng đơn (VND / suất — mỗi suất áp cho một phòng đơn trong suốt tour)
+  singleRoomSupplement Decimal? @db.Decimal(12, 2)
+
   /// RELATIONS
   departureLocation   Location @relation("TourDeparture", fields: [departureLocationId], references: [id])
   destinationLocation Location @relation("TourDestination", fields: [destinationLocationId], references: [id])
 
   images      TourImage[]
+  promoCodes  PromoCode[]
   videos      TourVideo[]
   schedules   TourSchedule[]
   itineraries TourItinerary[]
@@ -348,6 +375,7 @@ model TourItinerary {
 model TourTag {
   id Int @id @default(autoincrement())
   name String
+  description String? @db.Text
 
   tours TourTagMapping[]
 }
@@ -450,6 +478,36 @@ model TourMeal {
 }
 
 //////////////////////////////////////////////////
+// PROMO — mã giảm giá (áp khi đặt tour)
+//////////////////////////////////////////////////
+
+model PromoCode {
+  id Int @id @default(autoincrement())
+
+  /// Mã in HOA, duy nhất
+  code String @unique @db.VarChar(64)
+
+  /// Giảm cố định (VND) — dùng nếu set; ưu tiên hơn %
+  fixedOff Decimal? @db.Decimal(12, 2)
+  /// Giảm % trên subtotal trước giảm (0–100)
+  percentOff Decimal? @db.Decimal(5, 2)
+  /// Trần tiền giảm khi dùng %
+  maxDiscountAmount Decimal? @db.Decimal(12, 2)
+
+  isActive Boolean @default(true)
+
+  validFromUtc DateTime?
+  validToUtc   DateTime?
+
+  /// null = mọi tour
+  tourId Int?
+  tour   Tour? @relation(fields: [tourId], references: [id], onDelete: SetNull)
+
+  @@index([code])
+  @@index([tourId])
+}
+
+//////////////////////////////////////////////////
 // BOOKING
 //////////////////////////////////////////////////
 
@@ -472,9 +530,26 @@ model Booking {
   /// Ghi chú thêm
   notes String? @db.Text
 
+  /// Mã giảm giá đã áp dụng (snapshot, uppercase)
+  discountCode String? @db.VarChar(64)
+  /// Số tiền giảm (VND)
+  discountAmount Decimal? @db.Decimal(12, 2)
+
+  /// Số suất phụ thu phòng đơn đã chọn
+  singleRoomCount Int @default(0)
+  /// Tổng tiền phụ thu phòng đơn tại thời điểm đặt (VND)
+  singleRoomSupplementAmount Decimal? @db.Decimal(12, 2)
+
   status BookingStatus @default(PENDING)
   /// TTL cho trạng thái chờ thanh toán/xử lý
   expiredAtUtc DateTime?
+
+  /// Gửi yêu cầu hủy — chờ admin (trạng thái booking vẫn PENDING/CONFIRMED)
+  cancellationRequestState BookingCancellationRequestState @default(NONE)
+  cancellationRequestedAtUtc DateTime?
+  cancellationRejectedAtUtc  DateTime?
+  /// Thời điểm admin chấp nhận hủy (để đối chiếu hoàn tiền / SLA)
+  cancellationApprovedAtUtc DateTime?
 
   user     User?        @relation(fields: [userId], references: [id])
   schedule TourSchedule @relation(fields: [tourScheduleId], references: [id])
@@ -485,6 +560,7 @@ model Booking {
 
   @@index([userId])
   @@index([status, expiredAtUtc])
+  @@index([cancellationRequestState])
 }
 
 model BookingPassenger {
@@ -583,7 +659,7 @@ model Notification {
   userId Int
 
   title String?
-  content String?
+  content String? @db.Text
 
   isRead Boolean @default(false)
 

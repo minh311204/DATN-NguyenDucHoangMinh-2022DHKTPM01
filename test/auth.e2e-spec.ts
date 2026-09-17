@@ -10,6 +10,7 @@ describe('Auth flow (e2e)', () => {
   let prisma: PrismaService;
 
   const email = `auth-e2e-${Date.now()}@example.com`;
+  const phone = `09${String(Date.now()).slice(-9)}`;
   const password = 'Password123!';
 
   let accessToken = '';
@@ -29,6 +30,9 @@ describe('Auth flow (e2e)', () => {
 
   afterAll(async () => {
     if (userId > 0) {
+      await prisma.emailVerificationToken.deleteMany({
+        where: { userId },
+      });
       await prisma.blacklistedAccessToken.deleteMany({
         where: { userId },
       });
@@ -47,22 +51,58 @@ describe('Auth flow (e2e)', () => {
     await app.close();
   });
 
-  it('registers a user', async () => {
+  it('registers a user (pending email verification)', async () => {
     const res = await request(app.getHttpServer()).post('/auth/register').send({
       email,
       password,
-      name: 'Auth E2E',
+      passwordConfirm: password,
+      firstName: 'Auth',
+      lastName: 'E2E',
+      phone,
     });
 
     expect(res.status).toBe(201);
     expect(res.body.email).toBe(email);
-    expect(res.body.role).toBe('USER');
-    expect(typeof res.body.id).toBe('number');
+    expect(typeof res.body.message).toBe('string');
 
-    userId = res.body.id;
+    const u = await prisma.user.findUniqueOrThrow({ where: { email } });
+    userId = u.id;
+    expect(u.status).toBe('INACTIVE');
+    expect(u.emailVerified).toBe(false);
   });
 
-  it('logs in and receives access/refresh tokens', async () => {
+  it('rejects login before email verification', async () => {
+    const res = await request(app.getHttpServer()).post('/auth/login').send({
+      email,
+      password,
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('verifies email and returns tokens', async () => {
+    const row = await prisma.emailVerificationToken.findFirst({
+      where: { userId },
+    });
+    expect(row?.token).toBeDefined();
+
+    const res = await request(app.getHttpServer())
+      .post('/auth/verify-email')
+      .send({ token: row!.token });
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.accessToken).toBe('string');
+    expect(typeof res.body.refreshToken).toBe('string');
+    expect(typeof res.body.jti).toBe('string');
+
+    accessToken = res.body.accessToken;
+    refreshToken = res.body.refreshToken;
+
+    const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(u.status).toBe('ACTIVE');
+    expect(u.emailVerified).toBe(true);
+  });
+
+  it('logs in with password after verification', async () => {
     const res = await request(app.getHttpServer()).post('/auth/login').send({
       email,
       password,
@@ -70,9 +110,6 @@ describe('Auth flow (e2e)', () => {
 
     expect(res.status).toBe(200);
     expect(typeof res.body.accessToken).toBe('string');
-    expect(typeof res.body.refreshToken).toBe('string');
-    expect(typeof res.body.jti).toBe('string');
-
     accessToken = res.body.accessToken;
     refreshToken = res.body.refreshToken;
   });

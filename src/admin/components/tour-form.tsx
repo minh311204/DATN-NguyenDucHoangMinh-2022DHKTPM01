@@ -271,6 +271,8 @@ type TourFormProps = {
   tourId?: number;
   initialDetail: TourDetail | null;
   locations: LocationRow[];
+  /** Nhúng trong drawer danh sách: sau khi lưu gọi thay vì chuyển trang */
+  onSavedToList?: () => void;
 };
 
 export function TourForm({
@@ -278,6 +280,7 @@ export function TourForm({
   tourId,
   initialDetail,
   locations,
+  onSavedToList,
 }: TourFormProps) {
   const router = useRouter();
   const [fields, setFields] = useState<Fields>(() =>
@@ -533,8 +536,12 @@ export function TourForm({
           setErr(errorMessage(res.body, res.status));
           return;
         }
-        router.push("/tours");
-        router.refresh();
+        if (onSavedToList) {
+          onSavedToList();
+        } else {
+          router.push("/tours");
+          router.refresh();
+        }
         return;
       }
 
@@ -582,8 +589,12 @@ export function TourForm({
         }
       }
 
-      router.push("/tours");
-      router.refresh();
+      if (onSavedToList) {
+        onSavedToList();
+      } else {
+        router.push("/tours");
+        router.refresh();
+      }
     } finally {
       setSaving(false);
     }

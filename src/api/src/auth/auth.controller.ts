@@ -24,6 +24,11 @@ export class AuthController {
         }
       },
 
+      verifyEmail: async ({ body }) => {
+        const result = await this.authService.verifyEmail(body.token)
+        return { status: 200, body: result }
+      },
+
       login: async ({ body }) => {
         const result = await this.authService.Login(body)
 

@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Tour Booking — Quản trị",
-  description: "Bảng điều khiển quản trị tour và booking",
+  description: "Quản trị tour và booking",
 };
 
 export default function RootLayout({

@@ -1,0 +1,5 @@
+Ket noi voi dbeaver:
+cd prisma trong api roi run: npx prisma generate
+cd src run npx prisma studio 
+Chạy migration:
+cd src api prisma npx prisma migrate dev --name add_phone_user

@@ -6,6 +6,7 @@ import { TourMediaService } from './tour-media.service'
 import { TourTagService } from './tour-tag.service'
 import { TourReviewService } from './tour-review.service'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
+import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard'
 import { RolesGuard } from '../../common/guards/roles.guard'
 import { Roles } from '../../common/decorators/roles.decorator'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
@@ -23,8 +24,8 @@ export class TourController {
 
   @TsRestHandler(tourContract.getTourTags)
   getTourTags() {
-    return async () => {
-      const body = await this.tourTagService.getTags()
+    return async ({ query }: { query: { q?: string } }) => {
+      const body = await this.tourTagService.getTags(query?.q)
       return { status: 200, body }
     }
   }
@@ -38,9 +39,13 @@ export class TourController {
   }
 
   @TsRestHandler(tourContract.getTourById)
-  getTourById() {
+  @UseGuards(OptionalJwtAuthGuard)
+  getTourById(@CurrentUser() user?: { role?: string }) {
     return async ({ params }: { params: { id: string } }) => {
-      const body = await this.tourService.getTourById(Number(params.id))
+      const allowInactive = user?.role === 'ADMIN'
+      const body = await this.tourService.getTourById(Number(params.id), {
+        allowInactive,
+      })
       return { status: 200, body }
     }
   }
@@ -51,9 +56,39 @@ export class TourController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   createTourTag() {
-    return async ({ body }: { body: { name: string } }) => {
-      const result = await this.tourTagService.createTag(body.name)
+    return async ({
+      body,
+    }: {
+      body: { name: string; description?: string | null }
+    }) => {
+      const result = await this.tourTagService.createTag(body)
       return { status: 201, body: result }
+    }
+  }
+
+  @TsRestHandler(tourContract.updateTourTag)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  updateTourTag() {
+    return async ({
+      params,
+      body,
+    }: {
+      params: { id: string }
+      body: { name?: string; description?: string | null }
+    }) => {
+      const result = await this.tourTagService.updateTag(Number(params.id), body)
+      return { status: 200, body: result }
+    }
+  }
+
+  @TsRestHandler(tourContract.deleteTourTag)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  deleteTourTag() {
+    return async ({ params }: { params: { id: string } }) => {
+      const result = await this.tourTagService.deleteTag(Number(params.id))
+      return { status: 200, body: { message: result.message } }
     }
   }
 

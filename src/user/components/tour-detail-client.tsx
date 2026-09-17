@@ -11,6 +11,7 @@ import {
   Clock,
   Eye,
   MapPin,
+  Plane,
   Tag,
   Users,
   Utensils,
@@ -59,7 +60,178 @@ function durationLabel(days?: number | null): string {
   return `${days}N${Math.max(days - 1, 0)}Đ`;
 }
 
+function addHoursUtc(d: Date, hours: number): Date {
+  return new Date(d.getTime() + hours * 60 * 60 * 1000);
+}
+
+function subHoursUtc(d: Date, hours: number): Date {
+  return new Date(d.getTime() - hours * 60 * 60 * 1000);
+}
+
+function formatClockUtc(d: Date): string {
+  return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+}
+
+/** Bỏ hậu tố mô tả điểm đón/trả (dữ liệu seed/API cũ). */
+function cleanTransportPlaceLabel(s: string): string {
+  return s
+    .replace(/\s*[–-]\s*bến xe\s*\/\s*điểm đón khách\s*$/iu, "")
+    .replace(/\s*[–-]\s*điểm trả theo chương trình\s*$/iu, "")
+    .trim();
+}
+
+function transportPlaceOrFallback(legVal: string | null | undefined, fallback: string): string {
+  const v = legVal?.trim();
+  if (!v) return fallback;
+  const cleaned = cleanTransportPlaceLabel(v);
+  return cleaned || fallback;
+}
+
+/** Chỉ hiển thị mã chuyến (VD: VN1660); bỏ mô tả dài trong vehicleDetail. */
+function extractFlightDisplayCode(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  const s = raw.trim();
+  const m = s.match(/\b([A-Z]{2})\s*(\d{3,4})\b/i);
+  if (m) return `${m[1].toUpperCase()}${m[2]}`;
+  const compact = s.replace(/\s/g, "");
+  if (/^[A-Z]{2}\d{3,4}$/i.test(compact)) return compact.toUpperCase();
+  if (/chuyến|đưa|theo hãng|điểm dừng|chỗ|ghế|xe |bus|ô tô|đón|đưa đoàn/i.test(s)) return null;
+  if (s.length <= 10) return s;
+  return null;
+}
+
 type Schedule = TourDetail["schedules"][number];
+type TransportRow = NonNullable<TourDetail["transports"]>[number];
+
+/** Hai chặng đi / về: giờ khởi hành – đến (máy bay/xe) + mã chuyến nếu có */
+function buildScheduleLegTimes(
+  schedule: Schedule,
+  tour: TourDetail,
+  isFlightTour: boolean,
+): {
+  outbound: {
+    dep: Date;
+    arr: Date;
+    code: string | null;
+    depPlace: string;
+    arrPlace: string;
+  };
+  inbound: {
+    dep: Date;
+    arr: Date;
+    code: string | null;
+    depPlace: string;
+    arrPlace: string;
+  };
+} {
+  const sorted = [...(tour.transports ?? [])].sort((a, b) => a.legOrder - b.legOrder);
+  const flightLegs = sorted.filter((t) => t.vehicleType === "FLIGHT");
+
+  let legOut: TransportRow | undefined;
+  let legIn: TransportRow | undefined;
+
+  if (isFlightTour && flightLegs.length > 0) {
+    legOut = flightLegs[0];
+    legIn = flightLegs[1] ?? flightLegs[0];
+  } else {
+    legOut = sorted[0];
+    legIn = sorted[1] ?? sorted[0];
+  }
+
+  const start = new Date(schedule.startDate);
+  const end = new Date(schedule.endDate);
+
+  const hOut = legOut?.estimatedHours != null ? Number(legOut.estimatedHours) : isFlightTour ? 1.2 : 6;
+  const hIn = legIn?.estimatedHours != null ? Number(legIn.estimatedHours) : isFlightTour ? 1.2 : 6;
+
+  const outDep = start;
+  const outArr = addHoursUtc(outDep, hOut);
+  const inArr = end;
+  const inDep = subHoursUtc(inArr, hIn);
+
+  const outCode = isFlightTour ? extractFlightDisplayCode(legOut?.vehicleDetail) : null;
+  const inCode = isFlightTour ? extractFlightDisplayCode(legIn?.vehicleDetail) : null;
+
+  return {
+    outbound: {
+      dep: outDep,
+      arr: outArr,
+      code: outCode,
+      depPlace: transportPlaceOrFallback(legOut?.departurePoint, tour.departureLocation?.name ?? "—"),
+      arrPlace: transportPlaceOrFallback(legOut?.arrivalPoint, tour.destinationLocation?.name ?? "—"),
+    },
+    inbound: {
+      dep: inDep,
+      arr: inArr,
+      code: inCode,
+      depPlace: transportPlaceOrFallback(legIn?.departurePoint, tour.destinationLocation?.name ?? "—"),
+      arrPlace: transportPlaceOrFallback(legIn?.arrivalPoint, tour.departureLocation?.name ?? "—"),
+    },
+  };
+}
+
+function TransportLegBlock({
+  heading,
+  dateStr,
+  dep,
+  arr,
+  depPlace,
+  arrPlace,
+  variant,
+  lineCode,
+}: {
+  heading: string;
+  dateStr: string;
+  dep: Date;
+  arr: Date;
+  depPlace: string;
+  arrPlace: string;
+  variant: "flight" | "ground";
+  /** Mã chuyến (VD: VN1660) — chỉ dùng khi variant flight */
+  lineCode: string | null;
+}) {
+  const showLocations = variant === "ground";
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {variant === "flight" ? (
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1">
+          <p className="min-w-0 text-sm font-bold leading-snug text-stone-900">
+            {heading} - {dateStr}
+          </p>
+          <span className="flex shrink-0 items-center justify-self-end gap-1.5 whitespace-nowrap text-sm font-bold text-[#0b5ea8]">
+            <Plane className="h-4 w-4 shrink-0" aria-hidden />
+            {lineCode?.trim() || "—"}
+          </span>
+        </div>
+      ) : (
+        <p className="text-xs font-semibold text-stone-900 sm:text-sm">
+          {heading} - {dateStr}
+        </p>
+      )}
+      <div className="mt-2 flex w-full items-baseline justify-between gap-2 tabular-nums">
+        <span className="text-lg font-bold text-stone-900 sm:text-xl">{formatClockUtc(dep)}</span>
+        <span className="text-lg font-bold text-stone-900 sm:text-xl">{formatClockUtc(arr)}</span>
+      </div>
+      <div className="relative mt-3 h-8 w-full shrink-0">
+        <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-stone-300" />
+        <div className="absolute left-0 top-1/2 h-1.5 w-1.5 -translate-y-1/2 bg-stone-500" />
+        <div className="absolute right-0 top-1/2 h-1.5 w-1.5 -translate-y-1/2 bg-stone-500" />
+        {variant === "ground" ? (
+          <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white p-0.5 ring-2 ring-white">
+            <Bus className="h-4 w-4 text-stone-900" aria-hidden />
+          </div>
+        ) : null}
+      </div>
+      {showLocations ? (
+        <div className="mt-2 flex justify-between gap-3 text-sm font-medium text-stone-800">
+          <span className="min-w-0 flex-1 text-left leading-snug">{depPlace}</span>
+          <span className="min-w-0 flex-1 text-right leading-snug">{arrPlace}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /* ────────────────── calendar ────────────────── */
 
@@ -188,6 +360,8 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
   function pickDate(ymd: string) {
     const e = scheduleDateMap.get(ymd);
     if (!e || !e.schedules.length) return;
+    const [yy, mm] = ymd.split("-").map(Number);
+    setCalMonth({ year: yy, month: mm });
     setSelDate(ymd);
     setSelSchedId(e.schedules[0].id);
     scheduleRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -314,6 +488,12 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
       ? Math.max(selSchedule.availableSeats - (selSchedule.bookedSeats ?? 0), 0)
       : null;
   const tourCode = `NNSGN${tour.id}`;
+  const selMonthKey = selDate?.slice(0, 7) ?? null;
+
+  const legTimes = useMemo(
+    () => (selSchedule ? buildScheduleLegTimes(selSchedule, tour, isFlight) : null),
+    [selSchedule, tour, isFlight],
+  );
 
   /* ════════════════════ RENDER ════════════════════ */
 
@@ -446,163 +626,194 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                 Lịch khởi hành
               </h2>
 
-              {selDate ? (
-                /* ── Date selected view ── */
-                <div className="mt-5 rounded border border-stone-200 bg-white p-5">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={clearDate}
-                      className="inline-flex items-center gap-1 text-sm font-semibold text-stone-700 hover:text-stone-900"
-                    >
-                      <ChevronLeft className="h-4 w-4" /> Quay lại
-                    </button>
-                    <span className="text-3xl font-bold text-[#d92d20]">
-                      {selDate.split("-").reverse().join("/")}
-                    </span>
-                  </div>
-
-                  {/* Schedule code chips */}
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    {selDateScheds.map((s) => {
-                      const d = new Date(s.startDate);
-                      const code = `${tourCode}-${String(s.id).padStart(3, "0")}-${pad2(d.getUTCDate())}${pad2(d.getUTCMonth() + 1)}${String(d.getUTCFullYear()).slice(2)}`;
+              <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,180px)_minmax(0,1fr)] lg:items-stretch">
+                {/* ── Month column (always visible) — stretches to match right column height ── */}
+                <aside className="flex h-full min-h-0 flex-col rounded-2xl border border-stone-200/80 bg-white p-4 shadow-md">
+                  <p className="text-center text-sm font-bold text-stone-900">Chọn tháng</p>
+                  <div className="mt-3 flex flex-col gap-2">
+                    {availableMonths.map((ym) => {
+                      const [y, m] = ym.split("-");
+                      const yNum = Number(y);
+                      const mNum = Number(m);
+                      const isActive = selMonthKey
+                        ? ym === selMonthKey
+                        : calMonth.year === yNum && calMonth.month === mNum;
                       return (
                         <button
-                          key={s.id}
+                          key={ym}
                           type="button"
-                          onClick={() => setSelSchedId(s.id)}
+                          onClick={() => {
+                            if (selDate) {
+                              if (selMonthKey === ym) {
+                                clearDate();
+                                setCalMonth({ year: yNum, month: mNum });
+                                return;
+                              }
+                              clearDate();
+                            }
+                            setCalMonth({ year: yNum, month: mNum });
+                          }}
                           className={[
-                            "rounded border px-3 py-2 text-left text-xs transition",
-                            s.id === selSchedId
-                              ? "border-[#0b5ea8] bg-blue-50 text-[#0b5ea8] font-bold"
-                              : "border-stone-300 text-stone-600 hover:bg-stone-50",
+                            "rounded-lg px-3 py-2.5 text-sm font-semibold transition",
+                            isActive
+                              ? "bg-[#0b5ea8] text-white shadow-sm"
+                              : "border border-transparent bg-white text-[#0b5ea8] hover:bg-sky-50",
                           ].join(" ")}
                         >
-                          {code}
+                          {mNum}/{yNum}
                         </button>
                       );
                     })}
                   </div>
+                </aside>
 
-                  {/* Transport info */}
-                  {selSchedule && (
-                    <div className="mt-6">
-                      <h4 className="text-center text-base font-bold text-stone-800">Phương tiện di chuyển</h4>
-                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                        <div className="rounded border border-stone-200 p-3">
-                          <p className="text-xs text-stone-500">
-                            Ngày đi -{formatVnDate(new Date(selSchedule.startDate))}
-                          </p>
-                          <div className="mt-2 flex items-center gap-4 text-sm">
-                            <div className="text-center">
-                              <p className="font-bold text-stone-900">
-                                {pad2(new Date(selSchedule.startDate).getUTCHours())}:
-                                {pad2(new Date(selSchedule.startDate).getUTCMinutes())}
-                              </p>
-                              <p className="text-xs text-stone-500">
-                                {tour.departureLocation?.name ?? "—"}
-                              </p>
-                            </div>
-                            <div className="flex-1 border-t border-dashed border-stone-300" />
-                            <div className="text-center">
-                              <p className="font-bold text-stone-900">
-                                {tour.destinationLocation?.name ?? "—"}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="rounded border border-stone-200 p-3">
-                          <p className="text-xs text-stone-500">
-                            Ngày về -{formatVnDate(new Date(selSchedule.endDate))}
-                          </p>
-                          <div className="mt-2 flex items-center gap-4 text-sm">
-                            <div className="text-center">
-                              <p className="font-bold text-stone-900">
-                                {tour.destinationLocation?.name ?? "—"}
-                              </p>
-                            </div>
-                            <div className="flex-1 border-t border-dashed border-stone-300" />
-                            <div className="text-center">
-                              <p className="font-bold text-stone-900">
-                                {tour.departureLocation?.name ?? "—"}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                {/* ── Calendar or date detail ── */}
+                {selDate ? (
+                  <div className="flex h-full min-h-0 flex-col rounded-2xl border border-stone-200/80 bg-white p-4 shadow-lg sm:p-5">
+                    <div className="shrink-0 flex flex-wrap items-start justify-between gap-2 border-b border-stone-100 pb-3">
+                      <button
+                        type="button"
+                        onClick={clearDate}
+                        className="inline-flex cursor-pointer items-center gap-1 text-sm font-semibold text-[#0b5ea8] hover:text-[#063d6b]"
+                      >
+                        <ChevronLeft className="h-4 w-4" /> Quay lại
+                      </button>
+                      <span className="text-2xl font-bold tabular-nums text-[#d92d20] sm:text-3xl">
+                        {selDate.split("-").reverse().join("/")}
+                      </span>
                     </div>
-                  )}
 
-                  {/* Price breakdown */}
-                  <div className="mt-6">
-                    <h4 className="text-center text-base font-bold text-[#d92d20]">Giá</h4>
-                    <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3">
-                      <div>
-                        <p className="text-sm font-semibold text-stone-900">Người lớn</p>
-                        <p className="text-xs text-stone-500">(Từ 12 tuổi trở lên)</p>
-                        <p className="mt-1 font-bold text-[#d92d20]">{formatVnd(displayPrice)}</p>
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-stone-900">Em bé</p>
-                        <p className="text-xs text-stone-500">(Dưới 2 tuổi)</p>
-                        <p className="mt-1 font-bold text-[#d92d20]">
-                          {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.5)) : "Liên hệ"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-stone-900">Trẻ em</p>
-                        <p className="text-xs text-stone-500">(Từ 2 đến 11 tuổi)</p>
-                        <p className="mt-1 font-bold text-[#d92d20]">
-                          {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.9)) : "Liên hệ"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-stone-900">Phụ thu phòng đơn</p>
-                        <p className="text-xs text-stone-500">&nbsp;</p>
-                        <p className="mt-1 font-bold text-[#d92d20]">
-                          {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.32)) : "Liên hệ"}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="mt-4 text-xs leading-relaxed text-stone-500">
-                    Tiền bồi dưỡng cho hướng dẫn viên và tài xế địa phương khoảng 133.000 vnd/ngày/khách.
-                  </p>
-                </div>
-              ) : (
-                /* ── Calendar view ── */
-                <div className="mt-5 grid gap-4 lg:grid-cols-[140px_minmax(0,1fr)]">
-                  {/* Month picker */}
-                  <div>
-                    <p className="text-sm font-semibold text-stone-700">Chọn tháng</p>
-                    <div className="mt-2 flex flex-col gap-2">
-                      {availableMonths.map((ym) => {
-                        const [y, m] = ym.split("-");
-                        const isActive = calMonth.year === Number(y) && calMonth.month === Number(m);
+                    <div className="mt-3 shrink-0 flex flex-wrap gap-2">
+                      {selDateScheds.map((s) => {
+                        const d = new Date(s.startDate);
+                        const code = `${tourCode}-${String(s.id).padStart(3, "0")}-${pad2(d.getUTCDate())}${pad2(d.getUTCMonth() + 1)}${String(d.getUTCFullYear()).slice(2)}`;
                         return (
                           <button
-                            key={ym}
+                            key={s.id}
                             type="button"
-                            onClick={() => setCalMonth({ year: Number(y!), month: Number(m!) })}
+                            onClick={() => setSelSchedId(s.id)}
                             className={[
-                              "rounded-lg px-3 py-2 text-sm font-semibold transition",
-                              isActive
-                                ? "bg-[#0b5ea8] text-white"
-                                : "border border-stone-200 bg-white text-stone-700 hover:bg-stone-50",
+                              "rounded-lg border px-2.5 py-1.5 text-left text-[11px] leading-tight transition sm:text-xs",
+                              s.id === selSchedId
+                                ? "border-[#0b5ea8] bg-sky-50 text-[#0b5ea8] font-bold shadow-sm"
+                                : "border-stone-200 text-stone-600 hover:border-stone-300 hover:bg-stone-50",
                             ].join(" ")}
                           >
-                            {Number(m)}/{y}
+                            {code}
                           </button>
                         );
                       })}
                     </div>
-                  </div>
 
-                  {/* Calendar grid */}
-                  <div className="rounded border border-stone-200 bg-white p-5">
-                    <div className="flex items-center justify-center gap-6">
+                    {selSchedule && legTimes && (
+                      <div className="mt-4 shrink-0">
+                        <h4 className="text-center text-sm font-bold text-[#0b5ea8] sm:text-base">
+                          Phương tiện di chuyển
+                        </h4>
+                        {isFlight ? (
+                          <div className="mt-3 grid min-w-0 grid-cols-1 sm:grid-cols-2 sm:items-stretch sm:divide-x sm:divide-stone-200">
+                            <div className="flex min-h-0 min-w-0 flex-col border-stone-200 p-3 sm:border-0 sm:p-4">
+                              <TransportLegBlock
+                                heading="Ngày đi"
+                                dateStr={formatVnDate(legTimes.outbound.dep)}
+                                dep={legTimes.outbound.dep}
+                                arr={legTimes.outbound.arr}
+                                depPlace={legTimes.outbound.depPlace}
+                                arrPlace={legTimes.outbound.arrPlace}
+                                variant="flight"
+                                lineCode={legTimes.outbound.code}
+                              />
+                            </div>
+                            <div className="flex min-h-0 min-w-0 flex-col border-t border-stone-200 p-3 sm:border-t-0 sm:p-4">
+                              <TransportLegBlock
+                                heading="Ngày về"
+                                dateStr={formatVnDate(legTimes.inbound.dep)}
+                                dep={legTimes.inbound.dep}
+                                arr={legTimes.inbound.arr}
+                                depPlace={legTimes.inbound.depPlace}
+                                arrPlace={legTimes.inbound.arrPlace}
+                                variant="flight"
+                                lineCode={legTimes.inbound.code}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 grid min-w-0 grid-cols-1 sm:grid-cols-2 sm:items-stretch sm:divide-x sm:divide-stone-200">
+                            <div className="flex min-h-0 min-w-0 flex-col border-stone-200 p-3 sm:border-0 sm:p-4">
+                              <TransportLegBlock
+                                heading="Ngày đi"
+                                dateStr={formatVnDate(legTimes.outbound.dep)}
+                                dep={legTimes.outbound.dep}
+                                arr={legTimes.outbound.arr}
+                                depPlace={legTimes.outbound.depPlace}
+                                arrPlace={legTimes.outbound.arrPlace}
+                                variant="ground"
+                                lineCode={null}
+                              />
+                            </div>
+                            <div className="flex min-h-0 min-w-0 flex-col border-t border-stone-200 p-3 sm:border-t-0 sm:p-4">
+                              <TransportLegBlock
+                                heading="Ngày về"
+                                dateStr={formatVnDate(legTimes.inbound.dep)}
+                                dep={legTimes.inbound.dep}
+                                arr={legTimes.inbound.arr}
+                                depPlace={legTimes.inbound.depPlace}
+                                arrPlace={legTimes.inbound.arrPlace}
+                                variant="ground"
+                                lineCode={null}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="mt-4 shrink-0 sm:mt-5">
+                      <h4 className="text-center text-sm font-bold text-[#0b5ea8] sm:text-base">Giá</h4>
+                      <div className="mt-2 grid grid-cols-2 gap-0 border-y border-stone-200 sm:mt-3">
+                        <div className="border-b border-stone-200 p-3">
+                          <p className="text-xs font-semibold text-stone-900 sm:text-sm">Người lớn</p>
+                          <p className="text-[11px] text-stone-500 sm:text-xs">Từ 12 tuổi trở lên</p>
+                          <p className="mt-1 text-base font-bold text-[#d92d20] sm:text-lg">{formatVnd(displayPrice)}</p>
+                        </div>
+                        <div className="border-b border-l border-stone-200 p-3">
+                          <p className="text-xs font-semibold text-stone-900 sm:text-sm">Em bé</p>
+                          <p className="text-[11px] text-stone-500 sm:text-xs">Dưới 2 tuổi</p>
+                          <p className="mt-1 text-base font-bold text-[#d92d20] sm:text-lg">
+                            {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.5)) : "Liên hệ"}
+                          </p>
+                        </div>
+                        <div className="p-3">
+                          <p className="text-xs font-semibold text-stone-900 sm:text-sm">Trẻ em</p>
+                          <p className="text-[11px] text-stone-500 sm:text-xs">Từ 2 đến 11 tuổi</p>
+                          <p className="mt-1 text-base font-bold text-[#d92d20] sm:text-lg">
+                            {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.9)) : "Liên hệ"}
+                          </p>
+                        </div>
+                        <div className="border-l border-stone-200 p-3">
+                          <p className="text-xs font-semibold text-stone-900 sm:text-sm">Phụ thu phòng đơn</p>
+                          <p className="text-[11px] text-stone-500 sm:text-xs">&nbsp;</p>
+                          <p className="mt-1 text-base font-bold text-[#d92d20] sm:text-lg">
+                            {displayPrice != null ? formatVnd(Math.round(displayPrice * 0.32)) : "Liên hệ"}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="min-h-0 flex-1" aria-hidden />
+
+                    <div className="mt-3 shrink-0 rounded-lg border border-amber-200/90 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-950 sm:px-3.5 sm:py-2.5 sm:text-xs">
+                      Trường hợp hủy hoặc thay đổi chuyến bay do thời tiết, khai thác hoặc sự cố kỹ thuật,
+                      vui lòng liên hệ hotline{" "}
+                      <a href="tel:1800646888" className="font-semibold text-amber-900 underline">
+                        1800 646 888
+                      </a>{" "}
+                      để được hỗ trợ.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex h-full min-h-0 flex-col rounded-2xl border border-stone-200/80 bg-white p-5 shadow-md">
+                    <div className="flex shrink-0 items-center justify-center gap-6">
                       <button type="button" onClick={goPrev} className="p-1 text-stone-500 hover:text-stone-800">
                         <ChevronLeft className="h-5 w-5" />
                       </button>
@@ -614,8 +825,7 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       </button>
                     </div>
 
-                    {/* Weekday headers */}
-                    <div className="mt-4 grid grid-cols-7 text-center text-sm font-bold">
+                    <div className="mt-4 grid shrink-0 grid-cols-7 text-center text-sm font-bold">
                       {WEEKDAYS.map((d, i) => (
                         <div
                           key={d}
@@ -629,8 +839,7 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       ))}
                     </div>
 
-                    {/* Date cells */}
-                    <div className="grid grid-cols-7 text-center text-sm">
+                    <div className="grid shrink-0 grid-cols-7 text-center text-sm">
                       {calCells.map((cell, idx) => {
                         const entry = cell.currentMonth ? scheduleDateMap.get(cell.ymd) : undefined;
                         const has = !!entry;
@@ -663,12 +872,14 @@ export default function TourDetailClient({ tour }: { tour: TourDetail }) {
                       })}
                     </div>
 
-                    <p className="mt-3 text-xs italic text-[#d92d20]">
+                    <div className="min-h-0 flex-1" aria-hidden />
+
+                    <p className="shrink-0 text-xs italic text-[#d92d20]">
                       Quý khách vui lòng chọn ngày phù hợp
                     </p>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </section>
 
             {/* ═══ Section: Lịch trình ═══ */}

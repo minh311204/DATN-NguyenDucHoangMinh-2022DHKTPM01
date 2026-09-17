@@ -3,6 +3,8 @@ import { AUTH_KEYS } from "./auth-storage";
 
 export type BookingStatus = "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED";
 
+export type BookingCancellationRequestState = "NONE" | "PENDING" | "REJECTED";
+
 export type BookingPassengerAgeCategory = "ADULT" | "CHILD" | "INFANT";
 
 export type TourScheduleBrief = {
@@ -42,6 +44,11 @@ export type BookingListItem = {
   bookingDateUtc?: string | null;
   totalAmount?: number | null;
   status: BookingStatus;
+  cancelMinDaysBeforeDeparture: number;
+  cancellationRequestState: BookingCancellationRequestState;
+  cancellationRequestedAtUtc?: string | null;
+  cancellationRejectedAtUtc?: string | null;
+  cancellationApprovedAtUtc?: string | null;
   contact: BookingContact;
   notes?: string | null;
   passengerCounts: { adults: number; children: number; infants: number };
@@ -62,6 +69,8 @@ export type CreateBookingInput = {
   passengerCounts: { adults: number; children: number; infants: number };
   passengers: CreateBookingPassengerInput[];
   notes?: string;
+  singleRoomCount?: number;
+  discountCode?: string;
 };
 
 function getAccessToken(): string | null {
@@ -132,6 +141,17 @@ export async function createBooking(input: CreateBookingInput) {
   });
 }
 
+export async function previewPromo(body: {
+  code: string;
+  tourId: number;
+  subtotalBeforeDiscount: number;
+}) {
+  return requestWithOptionalAuth<{ discountAmount: number }>("/bookings/promo/preview", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export type VnpayCreatePaymentResult = {
   paymentUrl: string;
   paymentId: number;
@@ -147,6 +167,35 @@ export async function createVnpayPayment(bookingId: number, contactEmail?: strin
 export async function getMyBookings() {
   return authedRequest<BookingListItem[]>("/bookings/me", {
     method: "GET",
+  });
+}
+
+/**
+ * Phân tích mã đặt chỗ hiển thị dạng BK-123 (hoặc chỉ số).
+ * Trả về id số hoặc null nếu không hợp lệ.
+ */
+export function parseBookingCode(raw: string): number | null {
+  const t = raw.trim().toUpperCase().replace(/\s+/g, "");
+  if (!t) return null;
+  const withoutPrefix = t.startsWith("BK-") ? t.slice(3) : t;
+  if (!/^\d+$/.test(withoutPrefix)) return null;
+  const n = Number(withoutPrefix);
+  if (!Number.isSafeInteger(n) || n < 1) return null;
+  return n;
+}
+
+/** Chi tiết một booking — chỉ khi đặt chỗ thuộc tài khoản đang đăng nhập (hoặc admin). */
+export async function getBookingById(id: number) {
+  return authedRequest<BookingListItem>(`/bookings/${id}`, {
+    method: "GET",
+  });
+}
+
+/** Gửi yêu cầu hủy (admin duyệt). Trong khung: còn ít nhất cancelMinDaysBeforeDeparture ngày trước khởi hành. */
+export async function cancelMyBooking(id: number) {
+  return authedRequest<BookingListItem>(`/bookings/${id}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }
 

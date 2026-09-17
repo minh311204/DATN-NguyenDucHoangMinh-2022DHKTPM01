@@ -1,13 +1,48 @@
 import { z } from 'zod'
 
+function normalizeVnPhoneInput(s: string): string {
+  let p = s.replace(/\s/g, '')
+  if (p.startsWith('+84')) p = `0${p.slice(3)}`
+  else if (p.startsWith('84') && p.length >= 10) p = `0${p.slice(2)}`
+  return p
+}
+
+const vnPhoneSchema = z
+  .string()
+  .min(9)
+  .max(20)
+  .transform((s) => normalizeVnPhoneInput(s))
+  .refine((phone) => /^0[0-9]{9,10}$/.test(phone), {
+    message: 'Số điện thoại không hợp lệ',
+  })
+
 /** Đăng ký công khai — luôn tạo USER (không cho client chọn ADMIN). */
-export const RegisterPublicSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-  name: z.string().min(1),
-})
+export const RegisterPublicSchema = z
+  .object({
+    email: z.string().email(),
+    firstName: z.string().min(1).max(100),
+    lastName: z.string().min(1).max(100),
+    phone: vnPhoneSchema,
+    password: z.string().min(8),
+    passwordConfirm: z.string().min(8),
+  })
+  .refine((d) => d.password === d.passwordConfirm, {
+    message: 'Mật khẩu xác nhận không khớp',
+    path: ['passwordConfirm'],
+  })
 
 export type RegisterPublicRequest = z.infer<typeof RegisterPublicSchema>
+
+export const RegisterSuccessSchema = z.object({
+  message: z.string(),
+  email: z.string().email(),
+})
+
+export type RegisterSuccessResponse = z.infer<typeof RegisterSuccessSchema>
+
+export const VerifyEmailSchema = z.object({
+  token: z.string().min(1),
+})
 
 /** @deprecated dùng RegisterPublicSchema cho API register */
 export const CreateUserSchema = RegisterPublicSchema

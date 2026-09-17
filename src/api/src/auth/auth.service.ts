@@ -11,6 +11,8 @@ import { randomUUID, randomBytes } from 'node:crypto'
 import dayjs from 'dayjs'
 import { OAuth2Client } from 'google-auth-library'
 import { OAuthProvider } from '@prisma/client'
+import type { RegisterPublicRequest } from '../../../shared/schema/user.schema'
+import { MailService } from '../payment/mail.service'
 
 const ACCESS_TOKEN_BLACKLIST_TTL_DAYS = 1
 
@@ -19,6 +21,7 @@ export class AuthService {
   constructor(
     private prisma: PrismaService,
     private jwt: JwtService,
+    private mail: MailService,
   ) {}
 
   private async issueAuthTokens(user: { id: number; email: string }) {
@@ -40,50 +43,105 @@ export class AuthService {
     return { accessToken, refreshToken, jti }
   }
 
-  /** Đăng ký công khai — luôn là USER (ADMIN chỉ tạo qua seed / console). */
-  async register({
-    email,
-    password,
-    name,
-  }: {
-    email: string
-    password: string
-    name: string
-  }) {
+  /** Đăng ký công khai — luôn là USER; kích hoạt sau khi xác nhận email. */
+  async register(body: RegisterPublicRequest) {
+    const { email, firstName, lastName, phone, password } = body
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
     })
 
     if (existingUser) {
-      throw new ConflictException('Email already in use')
+      throw new ConflictException('Email đã được đăng ký')
+    }
+
+    const existingPhone = await this.prisma.user.findFirst({
+      where: { phone },
+    })
+    if (existingPhone) {
+      throw new ConflictException('Số điện thoại đã được sử dụng')
     }
 
     const passwordHash = await bcrypt.hash(password, 10)
-    const [firstName, ...lastNameParts] = name.trim().split(' ')
-    const lastName = lastNameParts.join(' ') || null
 
     const user = await this.prisma.user.create({
       data: {
         email,
+        phone,
         passwordHash,
         firstName,
         lastName,
-        status: 'ACTIVE',
+        status: 'INACTIVE',
         emailVerified: false,
         role: 'USER',
         hasPassword: true,
       },
     })
 
+    await this.prisma.emailVerificationToken.deleteMany({
+      where: { userId: user.id },
+    })
+
+    const token = randomBytes(32).toString('hex')
+
+    await this.prisma.emailVerificationToken.create({
+      data: {
+        userId: user.id,
+        token,
+        expiredDateTimeUtc: dayjs().add(24, 'hour').toDate(),
+      },
+    })
+
+    const base = process.env.USER_APP_PUBLIC_URL || 'http://localhost:3000'
+    const verifyUrl = `${base.replace(/\/$/, '')}/verify-email?token=${encodeURIComponent(token)}`
+
+    await this.mail.sendEmailVerificationEmail(user.email, verifyUrl)
+
     return {
-      id: user.id,
+      message:
+        'Đã gửi email xác nhận. Vui lòng kiểm tra hộp thư và nhấn liên kết để kích hoạt tài khoản.',
       email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      status: user.status,
-      role: user.role,
-      hasPassword: true,
     }
+  }
+
+  async verifyEmail(token: string) {
+    const row = await this.prisma.emailVerificationToken.findUnique({
+      where: { token },
+    })
+
+    if (!row || row.expiredDateTimeUtc < new Date()) {
+      throw new BadRequestException(
+        'Liên kết xác nhận không hợp lệ hoặc đã hết hạn.',
+      )
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: row.userId },
+    })
+
+    if (!user) {
+      throw new BadRequestException('Liên kết xác nhận không hợp lệ.')
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          status: 'ACTIVE',
+          emailVerified: true,
+          emailVerifiedAtUtc: new Date(),
+        },
+      }),
+      this.prisma.emailVerificationToken.deleteMany({
+        where: { userId: user.id },
+      }),
+    ])
+
+    const updated = await this.prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+    })
+
+    return this.issueAuthTokens(updated)
   }
 
   async Login({
@@ -113,6 +171,16 @@ export class AuthService {
 
     if (!valid) throw new UnauthorizedException('Sai email hoặc mật khẩu')
 
+    if (!user.emailVerified) {
+      throw new UnauthorizedException(
+        'Vui lòng xác nhận email trước khi đăng nhập.',
+      )
+    }
+
+    if (user.status !== 'ACTIVE') {
+      throw new UnauthorizedException('Tài khoản chưa được kích hoạt.')
+    }
+
     return this.issueAuthTokens(user)
   }
 
@@ -137,7 +205,7 @@ export class AuthService {
       throw new UnauthorizedException()
     }
 
-    if (user.status !== 'ACTIVE') {
+    if (user.status !== 'ACTIVE' || !user.emailVerified) {
       throw new UnauthorizedException('Account is suspended')
     }
 
@@ -404,7 +472,7 @@ export class AuthService {
   async requestPasswordReset(email: string) {
     const generic = {
       message:
-        'If an account exists for this email, password reset instructions have been recorded.',
+        'Nếu email tồn tại trong hệ thống, bạn sẽ nhận được hướng dẫn đặt lại mật khẩu.',
     }
 
     const user = await this.prisma.user.findUnique({ where: { email } })
@@ -426,7 +494,11 @@ export class AuthService {
       },
     })
 
-    // TODO: gửi email thật (link: /reset-password?token=...)
+    const base = process.env.USER_APP_PUBLIC_URL || 'http://localhost:3000'
+    const resetUrl = `${base.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`
+
+    await this.mail.sendPasswordResetEmail(user.email, resetUrl)
+
     if (process.env.NODE_ENV !== 'production') {
       console.log(
         `[auth] Password reset token for ${email}: ${token} (expires in 1h)`,
@@ -461,6 +533,6 @@ export class AuthService {
       where: { userId: row.userId },
     })
 
-    return { message: 'Password has been reset. Please sign in again.' }
+    return { message: 'Đã đặt lại mật khẩu. Vui lòng đăng nhập lại.' }
   }
 }

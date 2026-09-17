@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Heart } from "lucide-react";
 import {
   addToWishlist,
   checkWishlist,
   removeFromWishlist,
 } from "@/lib/client-wishlist";
-import { hasAccessToken } from "@/lib/auth-storage";
+import { AUTH_CHANGED_EVENT, hasAccessToken } from "@/lib/auth-storage";
+import { ensureSessionFresh } from "@/lib/client-auth";
 import { trackBehavior } from "@/lib/client-preference";
 
 type Props = {
@@ -29,16 +30,38 @@ export function WishlistButton({
   const [inWishlist, setInWishlist] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    setMounted(true);
+  const syncWishlistFlag = useCallback(() => {
     const isAuthed = hasAccessToken();
     setAuthed(isAuthed);
     if (isAuthed) {
       void checkWishlist(tourId).then((res) => {
         if (res.ok) setInWishlist(res.data.inWishlist);
       });
+    } else {
+      setInWishlist(false);
     }
   }, [tourId]);
+
+  useEffect(() => {
+    let alive = true;
+    setMounted(true);
+    void (async () => {
+      await ensureSessionFresh();
+      if (!alive) return;
+      syncWishlistFlag();
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [tourId, syncWishlistFlag]);
+
+  useEffect(() => {
+    function onAuthChanged() {
+      syncWishlistFlag();
+    }
+    window.addEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
+    return () => window.removeEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
+  }, [syncWishlistFlag]);
 
   async function toggle(e: React.MouseEvent) {
     e.preventDefault();

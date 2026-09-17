@@ -113,17 +113,21 @@ export class PaymentController {
       const r = await this.paymentService.handleVnpayReturn(query)
       const booking = r.bookingId != null ? `&bookingId=${r.bookingId}` : ''
       if (r.ok) {
-        return res.redirect(
-          302,
-          `${base}/bookings?payment=success${booking}`,
-        )
+        const qp = new URLSearchParams()
+        qp.set('payment', 'success')
+        if (r.bookingId != null) qp.set('bookingId', String(r.bookingId))
+        const qs = qp.toString()
+        if (r.tourId != null) {
+          return res.redirect(302, `${base}/book/${r.tourId}?${qs}`)
+        }
+        return res.redirect(302, `${base}/?${qs}`)
       }
       return res.redirect(
         302,
-        `${base}/checkout?payment=failed${booking}`,
+        `${base}/bookings?payment=failed${booking}`,
       )
     } catch {
-      return res.redirect(302, `${base}/checkout?payment=error`)
+      return res.redirect(302, `${base}/bookings?payment=error`)
     }
   }
 
