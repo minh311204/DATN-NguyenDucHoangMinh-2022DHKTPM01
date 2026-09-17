@@ -70,12 +70,19 @@ export class PreferenceService {
   }
 
   async upsertMyPreference(userId: number, data: UpsertPreferenceInput) {
+    /**
+     * Quy ước cập nhật từng phần:
+     *  - key vắng mặt trong body  → giữ nguyên (Prisma: undefined)
+     *  - key có giá trị null      → xoá (set NULL)
+     *  - key có giá trị chuỗi     → ghi đè
+     * Tránh `?? undefined` vì sẽ làm sập case "người dùng muốn xoá lựa chọn".
+     */
     const pref = await this.prisma.userPreference.upsert({
       where: { userId },
       update: {
-        preferredLocations: data.preferredLocations ?? undefined,
-        budgetRange: data.budgetRange ?? undefined,
-        travelStyle: data.travelStyle ?? undefined,
+        preferredLocations: data.preferredLocations,
+        budgetRange: data.budgetRange,
+        travelStyle: data.travelStyle,
       },
       create: {
         userId,
@@ -136,78 +143,199 @@ export class PreferenceService {
   }
 
   /**
-   * Gợi ý tour dựa trên hành vi: lấy các tour user đã xem/yêu thích nhiều,
-   * sau đó tìm tour tương tự theo điểm đến, tag, tourLine.
-   * Đây là recommendation đơn giản dựa trên collaborative filtering thủ công.
+   * Gợi ý tour theo nhiều tầng, ưu tiên giảm dần:
+   *   T1. Khớp sở thích đã lưu (locations + style + budget)
+   *   T2. Tương tự tour đã xem/yêu thích/đặt (destination, tourLine)
+   *   T3. Tour hot (rating + reviews)
+   * Budget (nếu user đã đặt) luôn là filter cứng ở mọi tầng — người dùng nói
+   *   "dưới 5 triệu" thì không gợi ý tour 50 triệu.
+   *
+   * Lưu ý: ngoài UserBehavior, ta cũng đọc trực tiếp bảng Booking để cover
+   * những booking cũ trước khi feature tracking 'book' được triển khai, và
+   * để không phụ thuộc vào việc fire-and-forget tracking có chạy hay không.
+   * Tour đã đặt (bất kỳ trạng thái nào không phải CANCELLED) được coi là tín
+   * hiệu mạnh hơn 'view' — vừa loại khỏi gợi ý vừa dùng làm seed cho T2.
    */
   async getRecommendations(userId: number, limit = 10) {
-    // Lấy top tourId user đã tương tác (view, wishlist, book)
-    const behaviors = await this.prisma.userBehavior.findMany({
-      where: { userId, action: { in: ['view', 'wishlist', 'book'] } },
-      orderBy: { createdAtUtc: 'desc' },
-      take: 30,
-      select: { tourId: true },
+    const [pref, behaviors, bookedScheduleRows] = await Promise.all([
+      this.prisma.userPreference.findUnique({ where: { userId } }),
+      this.prisma.userBehavior.findMany({
+        where: { userId, action: { in: ['view', 'wishlist', 'book'] } },
+        orderBy: { createdAtUtc: 'desc' },
+        take: 30,
+        select: { tourId: true },
+      }),
+      this.prisma.booking.findMany({
+        where: { userId, status: { not: 'CANCELLED' } },
+        orderBy: { bookingDateUtc: 'desc' },
+        take: 30,
+        select: { schedule: { select: { tourId: true } } },
+      }),
+    ])
+
+    const bookedTourIds = bookedScheduleRows
+      .map((b) => b.schedule?.tourId)
+      .filter((id): id is number => typeof id === 'number')
+
+    const interactedTourIds = [
+      ...new Set<number>([
+        ...behaviors.map((b) => b.tourId),
+        ...bookedTourIds,
+      ]),
+    ]
+    const budgetWhere = budgetRangeToWhere(pref?.budgetRange ?? null)
+    const collected = new Map<number, any>()
+
+    const baseWhere = (extraExclude: number[] = []) => ({
+      isActive: true,
+      ...(interactedTourIds.length || extraExclude.length
+        ? { id: { notIn: [...interactedTourIds, ...extraExclude] } }
+        : {}),
+      ...(budgetWhere ?? {}),
     })
 
-    const interactedTourIds = [...new Set(behaviors.map((b) => b.tourId))]
+    const push = (rows: any[]) => {
+      for (const r of rows) {
+        if (!collected.has(r.id)) collected.set(r.id, r)
+        if (collected.size >= limit) break
+      }
+    }
 
-    if (interactedTourIds.length === 0) {
-      // Cold start: trả về tour hot nhất (ratingAvg cao nhất)
-      const hotTours = await this.prisma.tour.findMany({
+    // T1. Sở thích đã lưu
+    const prefSoftWhere = buildPreferenceSoftWhere(pref)
+    if (prefSoftWhere) {
+      const tier1 = await this.prisma.tour.findMany({
+        where: { ...baseWhere(), ...prefSoftWhere },
+        orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }],
+        take: limit,
+        select: tourSelect,
+      })
+      push(tier1)
+    }
+
+    // T2. Tương tự hành vi
+    if (collected.size < limit && interactedTourIds.length > 0) {
+      const interactedTours = await this.prisma.tour.findMany({
+        where: { id: { in: interactedTourIds } },
+        select: { destinationLocationId: true, tourLine: true },
+      })
+      const destIds = [
+        ...new Set(interactedTours.map((t) => t.destinationLocationId)),
+      ]
+      const tourLines = [
+        ...new Set(interactedTours.map((t) => t.tourLine).filter(Boolean)),
+      ] as string[]
+
+      const behaviorOr: any[] = []
+      if (destIds.length) behaviorOr.push({ destinationLocationId: { in: destIds } })
+      if (tourLines.length) behaviorOr.push({ tourLine: { in: tourLines as any } })
+
+      if (behaviorOr.length > 0) {
+        const tier2 = await this.prisma.tour.findMany({
+          where: { ...baseWhere([...collected.keys()]), OR: behaviorOr },
+          orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }],
+          take: limit - collected.size,
+          select: tourSelect,
+        })
+        push(tier2)
+      }
+    }
+
+    // T3. Hot tours (vẫn tôn trọng budget nếu user đặt)
+    if (collected.size < limit) {
+      const tier3 = await this.prisma.tour.findMany({
+        where: baseWhere([...collected.keys()]),
+        orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }],
+        take: limit - collected.size,
+        select: tourSelect,
+      })
+      push(tier3)
+    }
+
+    // Fallback cuối: nếu budget quá hẹp khiến rỗng, bỏ ràng buộc budget
+    if (collected.size === 0 && budgetWhere) {
+      const fallback = await this.prisma.tour.findMany({
         where: { isActive: true },
         orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }],
         take: limit,
         select: tourSelect,
       })
-      return hotTours.map(mapTour)
+      push(fallback)
     }
 
-    // Lấy thông tin về các tour đã tương tác (điểm đến, tourLine)
-    const interactedTours = await this.prisma.tour.findMany({
-      where: { id: { in: interactedTourIds } },
-      select: {
-        destinationLocationId: true,
-        tourLine: true,
-      },
-    })
-
-    const destIds = [...new Set(interactedTours.map((t) => t.destinationLocationId))]
-    const tourLines = [...new Set(interactedTours.map((t) => t.tourLine).filter(Boolean))]
-
-    // Tìm tour tương tự chưa tương tác
-    const recommended = await this.prisma.tour.findMany({
-      where: {
-        isActive: true,
-        id: { notIn: interactedTourIds },
-        OR: [
-          { destinationLocationId: { in: destIds } },
-          ...(tourLines.length > 0 ? [{ tourLine: { in: tourLines as any } }] : []),
-        ],
-      },
-      orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }],
-      take: limit,
-      select: tourSelect,
-    })
-
-    // Nếu không đủ, bổ sung tour phổ biến
-    if (recommended.length < limit) {
-      const extra = await this.prisma.tour.findMany({
-        where: {
-          isActive: true,
-          id: {
-            notIn: [
-              ...interactedTourIds,
-              ...recommended.map((t) => t.id),
-            ],
-          },
-        },
-        orderBy: [{ ratingAvg: 'desc' }, { totalReviews: 'desc' }],
-        take: limit - recommended.length,
-        select: tourSelect,
-      })
-      return [...recommended, ...extra].map(mapTour)
-    }
-
-    return recommended.map(mapTour)
+    return Array.from(collected.values()).slice(0, limit).map(mapTour)
   }
+}
+
+/**
+ * Map `budgetRange` của user (under_5m / 5_10m / 10_20m / over_20m) thành
+ * điều kiện Prisma trên `basePrice`. Đơn vị: VND. Khớp convention của
+ * `tour.service.ts` để gợi ý và tìm kiếm dùng cùng ngưỡng (5tr / 10tr / 20tr).
+ */
+function budgetRangeToWhere(
+  budgetRange: string | null,
+): { basePrice: { gte?: number; lt?: number } } | null {
+  if (!budgetRange) return null
+  const m = 1_000_000
+  const map: Record<string, { gte?: number; lt?: number }> = {
+    under_5m: { lt: 5 * m },
+    '5_10m': { gte: 5 * m, lt: 10 * m },
+    '10_20m': { gte: 10 * m, lt: 20 * m },
+    over_20m: { gte: 20 * m },
+  }
+  const range = map[budgetRange]
+  return range ? { basePrice: range } : null
+}
+
+/**
+ * Soft-match cho gợi ý tầng 1: kết hợp OR giữa style → tourLine và
+ * preferredLocations → tên điểm đến. Budget được xử lý ở tầng wrap base
+ * (luôn áp dụng) nên không cộng vào đây.
+ *
+ * Style → TourLine (mềm, mapping nhiều khả năng):
+ *   luxury     → PREMIUM
+ *   budget     → ECONOMY, GOOD_VALUE
+ *   family     → STANDARD, PREMIUM
+ *   cultural   → STANDARD, PREMIUM
+ *   relaxation → PREMIUM, STANDARD
+ *   adventure  → STANDARD, ECONOMY
+ */
+function buildPreferenceSoftWhere(
+  pref: {
+    travelStyle?: string | null
+    preferredLocations?: string | null
+  } | null,
+): { OR: any[] } | null {
+  if (!pref) return null
+  const or: any[] = []
+
+  if (pref.travelStyle) {
+    const styleMap: Record<string, string[]> = {
+      luxury: ['PREMIUM'],
+      budget: ['ECONOMY', 'GOOD_VALUE'],
+      family: ['STANDARD', 'PREMIUM'],
+      cultural: ['STANDARD', 'PREMIUM'],
+      relaxation: ['PREMIUM', 'STANDARD'],
+      adventure: ['STANDARD', 'ECONOMY'],
+    }
+    const lines = styleMap[pref.travelStyle]
+    if (lines?.length) or.push({ tourLine: { in: lines as any } })
+  }
+
+  if (pref.preferredLocations) {
+    const locs = pref.preferredLocations
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 10)
+    if (locs.length) {
+      or.push({
+        destinationLocation: {
+          OR: locs.map((name) => ({ name: { contains: name } })),
+        },
+      })
+    }
+  }
+
+  return or.length > 0 ? { OR: or } : null
 }

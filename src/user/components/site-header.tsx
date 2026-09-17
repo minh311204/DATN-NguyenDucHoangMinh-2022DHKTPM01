@@ -14,13 +14,13 @@ import {
   initialsFromEmail,
 } from "@/lib/auth-storage";
 import { ensureSessionFresh } from "@/lib/client-auth";
+import {
+  SITE_HEADER_HIDE_AFTER_PX,
+  SITE_HEADER_SHOW_WHEN_UNDER_PX,
+} from "@/lib/site-header-scroll";
 import { NotificationBell } from "./notification-bell";
 
 const BRAND = SITE_BRAND;
-
-/** Tránh bật/tắt header lặp: chỉ ẩn khi cuộn quá xa đỉnh; chỉ hiện khi cuộn gần đỉnh lại */
-const HEADER_HIDE_AFTER_PX = 56;
-const HEADER_SHOW_WHEN_UNDER_PX = 20;
 
 function cn(...parts: (string | false | undefined)[]) {
   return parts.filter(Boolean).join(" ");
@@ -30,7 +30,6 @@ const MAIN_NAV: { href: string; label: string }[] = [
   { href: "/", label: "Trang chủ" },
   { href: "/gioi-thieu", label: "Giới thiệu" },
   { href: "/tours", label: "Khám phá" },
-  { href: "/tin-tuc", label: "Tin tức" },
   { href: "/lien-he", label: "Liên hệ" },
 ];
 
@@ -123,6 +122,7 @@ export function SiteHeader() {
       setHeaderHeight((prev) =>
         Math.abs(prev - next) < 2 ? prev : next,
       );
+      document.documentElement.style.setProperty("--site-header-h", `${next}px`);
     };
     const ro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect.height;
@@ -133,6 +133,13 @@ export function SiteHeader() {
     return () => ro.disconnect();
   }, [isHome, mounted, loggedIn, menuOpen]);
 
+  useLayoutEffect(() => {
+    if (typeof document === "undefined") return;
+    if (isHome) {
+      document.documentElement.style.removeProperty("--site-header-h");
+    }
+  }, [isHome]);
+
   useEffect(() => {
     function onScroll() {
       if (scrollRaf.current != null) return;
@@ -141,9 +148,9 @@ export function SiteHeader() {
         const y = window.scrollY ?? document.documentElement.scrollTop;
         setScrollAtTop((visible) => {
           if (visible) {
-            return y < HEADER_HIDE_AFTER_PX;
+            return y < SITE_HEADER_HIDE_AFTER_PX;
           }
-          return y < HEADER_SHOW_WHEN_UNDER_PX;
+          return y < SITE_HEADER_SHOW_WHEN_UNDER_PX;
         });
       });
     }
@@ -234,19 +241,29 @@ export function SiteHeader() {
 
         <nav
           aria-label="Điều hướng chính"
+          aria-busy={!mounted}
           className="hidden min-w-0 flex-1 justify-center md:flex"
         >
           <div className="flex items-center gap-0.5 rounded-full bg-[#1f2421] p-1.5 shadow-lg shadow-black/25 ring-1 ring-black/30 md:gap-1">
-            {MAIN_NAV.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                aria-current={mainNavActive(pathname, item.href) ? "page" : undefined}
-                className={mainNavClass(item.href)}
+            {mounted ? (
+              MAIN_NAV.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  aria-current={mainNavActive(pathname, item.href) ? "page" : undefined}
+                  className={mainNavClass(item.href)}
+                >
+                  {item.label}
+                </Link>
+              ))
+            ) : (
+              <div
+                className="flex min-h-[2.75rem] min-w-[14rem] flex-1 items-center justify-center px-2 md:min-w-[22rem]"
+                aria-hidden
               >
-                {item.label}
-              </Link>
-            ))}
+                <span className="h-2.5 w-24 animate-pulse rounded-full bg-white/15 md:w-36" />
+              </div>
+            )}
           </div>
         </nav>
 

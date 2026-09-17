@@ -1,17 +1,30 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { GoogleOAuthProvider } from "@react-oauth/google";
+import { useCallback, useState } from "react";
 import { AuthHeroShell } from "@/components/auth-hero-shell";
-import { postRegister } from "@/lib/client-auth";
+import { OAuthSocialSection } from "@/components/oauth-social-section";
+import { postRegister, storeAuthSession } from "@/lib/client-auth";
 import { AUTH_BRAND, AUTH_INPUT_CLASS } from "@/lib/auth-ui";
 import { errorMessage } from "@/lib/format";
 
-export default function RegisterPage() {
+function RegisterForm() {
+  const router = useRouter();
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState<{ message: string; email: string } | null>(
     null,
+  );
+
+  const onOAuthSuccess = useCallback(
+    async (accessToken: string, refreshToken: string) => {
+      await storeAuthSession(accessToken, refreshToken);
+      router.push("/");
+      router.refresh();
+    },
+    [router],
   );
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -79,156 +92,173 @@ export default function RegisterPage() {
     );
   }
 
-  const card = (
-    <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-md shadow-slate-200/80 sm:p-6">
-      <form className="space-y-4" onSubmit={onSubmit}>
-        {err ? (
-          <p className="rounded-xl bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
-            {err}
-          </p>
-        ) : null}
-
-        <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
-          <div>
-            <label
-              htmlFor="lastName"
-              className="mb-1 block text-sm font-semibold text-slate-900"
-            >
-              Tên
-            </label>
-            <input
-              id="lastName"
-              name="lastName"
-              type="text"
-              required
-              autoComplete="given-name"
-              placeholder="Tên"
-              className={AUTH_INPUT_CLASS}
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="firstName"
-              className="mb-1 block text-sm font-semibold text-slate-900"
-            >
-              Họ
-            </label>
-            <input
-              id="firstName"
-              name="firstName"
-              type="text"
-              required
-              autoComplete="family-name"
-              placeholder="Họ"
-              className={AUTH_INPUT_CLASS}
-            />
-          </div>
-        </div>
-
-        <div>
-          <label
-            htmlFor="email"
-            className="mb-1 block text-sm font-semibold text-slate-900"
-          >
-            Email
-          </label>
-          <input
-            id="email"
-            name="email"
-            type="email"
-            required
-            autoComplete="email"
-            placeholder="email@vi_du.com"
-            className={AUTH_INPUT_CLASS}
-          />
-        </div>
-
-        <div>
-          <label
-            htmlFor="phone"
-            className="mb-1 block text-sm font-semibold text-slate-900"
-          >
-            Số điện thoại
-          </label>
-          <input
-            id="phone"
-            name="phone"
-            type="tel"
-            required
-            inputMode="tel"
-            autoComplete="tel"
-            placeholder="Ví dụ: 0912345678"
-            className={AUTH_INPUT_CLASS}
-          />
-        </div>
-
-        <div>
-          <label
-            htmlFor="password"
-            className="mb-1 block text-sm font-semibold text-slate-900"
-          >
-            Mật khẩu
-          </label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            required
-            minLength={8}
-            autoComplete="new-password"
-            placeholder="Tối thiểu 8 ký tự"
-            className={AUTH_INPUT_CLASS}
-          />
-        </div>
-
-        <div>
-          <label
-            htmlFor="passwordConfirm"
-            className="mb-1 block text-sm font-semibold text-slate-900"
-          >
-            Xác nhận mật khẩu
-          </label>
-          <input
-            id="passwordConfirm"
-            name="passwordConfirm"
-            type="password"
-            required
-            minLength={8}
-            autoComplete="new-password"
-            placeholder="Xác nhận mật khẩu"
-            className={AUTH_INPUT_CLASS}
-          />
-        </div>
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-xl py-3 text-[15px] font-semibold text-white shadow-md transition hover:brightness-110 disabled:opacity-60"
-          style={{ backgroundColor: AUTH_BRAND }}
-        >
-          {loading ? "Đang tạo tài khoản…" : "Tạo tài khoản"}
-        </button>
-
-        <p className="text-center text-sm text-slate-600">
-          Đã có tài khoản?{" "}
-          <Link
-            href="/login"
-            className="font-semibold hover:underline"
-            style={{ color: AUTH_BRAND }}
-          >
-            Đăng nhập
-          </Link>
-        </p>
-      </form>
-    </div>
-  );
-
   return (
     <AuthHeroShell
       title="Tạo tài khoản"
       subtitle="Vài thông tin cơ bản — nhanh chóng, an toàn."
     >
-      {card}
+      <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-md shadow-slate-200/80 sm:p-6">
+        <form className="space-y-4" onSubmit={onSubmit}>
+          {err ? (
+            <p className="rounded-xl bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
+              {err}
+            </p>
+          ) : null}
+
+          <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
+            <div>
+              <label
+                htmlFor="lastName"
+                className="mb-1 block text-sm font-semibold text-slate-900"
+              >
+                Tên
+              </label>
+              <input
+                id="lastName"
+                name="lastName"
+                type="text"
+                required
+                autoComplete="given-name"
+                placeholder="Tên"
+                className={AUTH_INPUT_CLASS}
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="firstName"
+                className="mb-1 block text-sm font-semibold text-slate-900"
+              >
+                Họ
+              </label>
+              <input
+                id="firstName"
+                name="firstName"
+                type="text"
+                required
+                autoComplete="family-name"
+                placeholder="Họ"
+                className={AUTH_INPUT_CLASS}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label
+              htmlFor="email"
+              className="mb-1 block text-sm font-semibold text-slate-900"
+            >
+              Email
+            </label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              required
+              autoComplete="email"
+              placeholder="email@vi_du.com"
+              className={AUTH_INPUT_CLASS}
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="phone"
+              className="mb-1 block text-sm font-semibold text-slate-900"
+            >
+              Số điện thoại
+            </label>
+            <input
+              id="phone"
+              name="phone"
+              type="tel"
+              required
+              inputMode="tel"
+              autoComplete="tel"
+              placeholder="Ví dụ: 0912345678"
+              className={AUTH_INPUT_CLASS}
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="password"
+              className="mb-1 block text-sm font-semibold text-slate-900"
+            >
+              Mật khẩu
+            </label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              placeholder="Tối thiểu 8 ký tự"
+              className={AUTH_INPUT_CLASS}
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="passwordConfirm"
+              className="mb-1 block text-sm font-semibold text-slate-900"
+            >
+              Xác nhận mật khẩu
+            </label>
+            <input
+              id="passwordConfirm"
+              name="passwordConfirm"
+              type="password"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              placeholder="Xác nhận mật khẩu"
+              className={AUTH_INPUT_CLASS}
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-xl py-3 text-[15px] font-semibold text-white shadow-md transition hover:brightness-110 disabled:opacity-60"
+            style={{ backgroundColor: AUTH_BRAND }}
+          >
+            {loading ? "Đang tạo tài khoản…" : "Tạo tài khoản"}
+          </button>
+
+          <p className="text-center text-sm text-slate-600">
+            Đã có tài khoản?{" "}
+            <Link
+              href="/login"
+              className="font-semibold hover:underline"
+              style={{ color: AUTH_BRAND }}
+            >
+              Đăng nhập
+            </Link>
+          </p>
+        </form>
+
+        <OAuthSocialSection
+          dividerLabel="Hoặc tạo tài khoản nhanh"
+          facebookOAuthReturnPath="/register"
+          loading={loading}
+          setLoading={setLoading}
+          setErr={setErr}
+          onOAuthSuccess={onOAuthSuccess}
+        />
+      </div>
     </AuthHeroShell>
   );
+}
+
+export default function RegisterPage() {
+  const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+  if (googleClientId) {
+    return (
+      <GoogleOAuthProvider clientId={googleClientId} locale="vi">
+        <RegisterForm />
+      </GoogleOAuthProvider>
+    );
+  }
+  return <RegisterForm />;
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Calendar,
   CalendarDays,
@@ -25,6 +25,12 @@ import {
 import { clearAuthStorage, hasAccessToken } from "@/lib/auth-storage";
 import { ensureSessionFresh } from "@/lib/client-auth";
 import { errorMessage, formatVnd } from "@/lib/format";
+import {
+  BookingCornerToast,
+  CancelBookingConfirmModal,
+  type BookingCornerToastPayload,
+} from "@/components/bookings/booking-cancel-feedback";
+import { subscribeToBookingUpdates } from "@/lib/notification-socket";
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -49,6 +55,16 @@ function canSubmitCancellationRequest(row: BookingListItem): boolean {
   if (!row.schedule?.startDate) return false;
   const dep = new Date(row.schedule.startDate).getTime();
   return dep - Date.now() >= minDays * MS_PER_DAY;
+}
+
+/** Đủ điều kiện hiển thị nút và gửi yêu cầu hủy (khớp điều kiện server). */
+function canSubmitBookingCancellation(row: BookingListItem): boolean {
+  const isCancellationPending = row.cancellationRequestState === "PENDING";
+  return (
+    (row.status === "PENDING" || row.status === "CONFIRMED") &&
+    !isCancellationPending &&
+    canSubmitCancellationRequest(row)
+  );
 }
 
 const STATUS_CONFIG: Record<
@@ -77,57 +93,208 @@ const STATUS_CONFIG: Record<
   },
 };
 
+function formatDateTimeVn(isoStr: string) {
+  const d = new Date(isoStr);
+  return d.toLocaleString("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function ExpandedBookingDetail({ row }: { row: BookingListItem }) {
+  const [passengersOpen, setPassengersOpen] = useState(true);
+
+  const totalAmount = row.totalAmount ?? 0;
+  const isPaid = row.status === "CONFIRMED" || row.status === "COMPLETED";
+  const paidAmount = isPaid ? totalAmount : 0;
+  const remaining = totalAmount - paidAmount;
+
+  const statusMessage =
+    row.status === "CONFIRMED" || row.status === "COMPLETED"
+      ? "Booking của quý khách đã được chúng tôi xác nhận thành công"
+      : row.status === "CANCELLED"
+        ? "Booking đã bị hủy"
+        : "Booking đang chờ thanh toán";
+
+  return (
+    <div className="mt-4 space-y-4 border-t border-stone-100 pt-4">
+      {/* ── THÔNG TIN LIÊN LẠC ── */}
+      <div className="overflow-hidden rounded-xl border border-stone-200">
+        <p className="border-b border-stone-200 bg-white px-5 py-3 text-[13px] font-bold uppercase tracking-wide text-[#0b5ea8]">
+          Thông tin liên lạc
+        </p>
+        <div className="bg-white px-5 py-4">
+          <div className="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <p className="text-xs font-medium text-stone-400">Họ tên</p>
+              <p className="mt-1 font-medium text-stone-900">{row.contact?.fullName ?? "—"}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-stone-400">Email</p>
+              <p className="mt-1 break-all text-stone-700">{row.contact?.email ?? "—"}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-stone-400">Điện thoại</p>
+              <p className="mt-1 text-stone-700">{row.contact?.phone ?? "—"}</p>
+            </div>
+          </div>
+          {row.notes ? (
+            <div className="mt-3 border-t border-stone-100 pt-3 text-sm">
+              <p className="text-xs font-medium text-stone-400">Ghi chú</p>
+              <p className="mt-1 text-stone-600">{row.notes}</p>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {/* ── CHI TIẾT BOOKING ── */}
+      <div className="overflow-hidden rounded-xl border border-stone-200">
+        <p className="border-b border-stone-200 bg-white px-5 py-3 text-[13px] font-bold uppercase tracking-wide text-[#0b5ea8]">
+          Chi tiết booking
+        </p>
+        <div className="bg-white">
+          <table className="w-full text-sm">
+            <tbody>
+              <tr className="border-b border-stone-100">
+                <td className="w-48 px-5 py-2.5 text-stone-500">Mã đặt chỗ:</td>
+                <td className="px-5 py-2.5 font-bold text-red-600">BK-{row.id}</td>
+              </tr>
+              {row.bookingDateUtc ? (
+                <tr className="border-b border-stone-100">
+                  <td className="px-5 py-2.5 text-stone-500">Ngày tạo:</td>
+                  <td className="px-5 py-2.5 text-stone-800">{formatDateTimeVn(row.bookingDateUtc)}</td>
+                </tr>
+              ) : null}
+              <tr className="border-b border-stone-100">
+                <td className="px-5 py-2.5 text-stone-500">Trị giá booking:</td>
+                <td className="px-5 py-2.5 font-semibold text-stone-900">{formatVnd(totalAmount)}</td>
+              </tr>
+              <tr className="border-b border-stone-100">
+                <td className="px-5 py-2.5 text-stone-500">Số tiền đã thanh toán:</td>
+                <td className="px-5 py-2.5 font-bold text-stone-900">{formatVnd(paidAmount)}</td>
+              </tr>
+              <tr className="border-b border-stone-100">
+                <td className="px-5 py-2.5 text-stone-500">Số tiền còn lại:</td>
+                <td className="px-5 py-2.5 font-semibold text-stone-900">{formatVnd(remaining)}</td>
+              </tr>
+              <tr className="border-b border-stone-100">
+                <td className="px-5 py-2.5 text-stone-500">Tình trạng:</td>
+                <td className="px-5 py-2.5 font-bold italic text-[#0b5ea8]">{statusMessage}</td>
+              </tr>
+              {row.status === "PENDING" && row.bookingDateUtc ? (
+                <tr>
+                  <td className="px-5 py-2.5 text-stone-500">Thời hạn thanh toán:</td>
+                  <td className="px-5 py-2.5">
+                    <span className="font-bold text-red-600">
+                      {formatDateTimeVn(row.bookingDateUtc)}
+                    </span>
+                    <span className="ml-1 text-xs italic text-red-500">
+                      - (Theo giờ Việt Nam. Booking sẽ tự động hủy nếu quá thời hạn thanh toán trên)
+                    </span>
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ── DANH SÁCH HÀNH KHÁCH (collapsible) ── */}
+      {row.passengers && row.passengers.length > 0 ? (
+        <div className="overflow-hidden rounded-xl border border-stone-200">
+          <button
+            type="button"
+            onClick={() => setPassengersOpen((v) => !v)}
+            className="flex w-full items-center justify-between border-b border-stone-200 bg-white px-5 py-3 text-left"
+          >
+            <span className="text-[13px] font-bold uppercase tracking-wide text-[#0b5ea8]">
+              Danh sách hành khách
+            </span>
+            {passengersOpen ? (
+              <ChevronUp className="h-5 w-5 text-stone-400" />
+            ) : (
+              <ChevronDown className="h-5 w-5 text-stone-400" />
+            )}
+          </button>
+          {passengersOpen ? (
+            <div className="overflow-x-auto bg-white">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-stone-200 bg-stone-50 text-left text-[11px] font-semibold uppercase text-stone-500">
+                    <th className="px-5 py-2.5">Họ tên</th>
+                    <th className="px-5 py-2.5">Ngày sinh</th>
+                    <th className="px-5 py-2.5">Giới tính</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-stone-100">
+                  {row.passengers.map((p) => {
+                    const dob = p.dateOfBirth
+                      ? (() => {
+                          const d = new Date(p.dateOfBirth);
+                          return `${pad2(d.getUTCDate())}/${pad2(d.getUTCMonth() + 1)}/${d.getUTCFullYear()}`;
+                        })()
+                      : "—";
+                    return (
+                      <tr key={p.id}>
+                        <td className="px-5 py-2.5 font-medium text-stone-900">{p.fullName}</td>
+                        <td className="whitespace-nowrap px-5 py-2.5 text-stone-600">{dob}</td>
+                        <td className="px-5 py-2.5 text-stone-600">{p.gender?.trim() || "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function BookingCard({
   row,
   onRepay,
   paying,
   highlighted,
-  onRowUpdate,
+  cancellingBookingId,
+  onOpenCancelModal,
 }: {
   row: BookingListItem;
   onRepay: (id: number) => void;
   paying: boolean;
   highlighted?: boolean;
-  onRowUpdate: (next: BookingListItem) => void;
+  cancellingBookingId: number | null;
+  onOpenCancelModal: (bookingId: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [cancelErr, setCancelErr] = useState<string | null>(null);
-  const [cancelling, setCancelling] = useState(false);
+  const prevCancellationRef = useRef(row.cancellationRequestState);
   const cfg = STATUS_CONFIG[row.status];
   const tourId = row.schedule?.tour?.id;
   const tourName = row.schedule?.tour?.name ?? "Tour";
   const startDate = row.schedule?.startDate;
   const endDate = row.schedule?.endDate;
+  useEffect(() => {
+    const prev = prevCancellationRef.current;
+    prevCancellationRef.current = row.cancellationRequestState;
+    if (prev !== "PENDING" && row.cancellationRequestState === "PENDING") {
+      setExpanded(false);
+    }
+  }, [row.cancellationRequestState]);
+
   const minCancelDays = row.cancelMinDaysBeforeDeparture ?? 3;
   const isCancellationPending = row.cancellationRequestState === "PENDING";
   const isCancellationRejected = row.cancellationRequestState === "REJECTED";
-  const canSubmitCancellation =
-    (row.status === "PENDING" || row.status === "CONFIRMED") &&
-    !isCancellationPending &&
-    canSubmitCancellationRequest(row);
+  const canSubmitCancellation = canSubmitBookingCancellation(row);
   const couldCancelButOutsideWindow =
     (row.status === "PENDING" || row.status === "CONFIRMED") &&
     !isCancellationPending &&
     !canSubmitCancellationRequest(row);
 
-  async function onBookingActions(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setCancelErr(null);
-    if (!canSubmitCancellation || cancelling) return;
-    const ok = window.confirm(
-      `Gửi yêu cầu hủy BK-${row.id}? Admin sẽ xử lý; hủy có điều kiện hoàn tiền chỉ khi còn ít nhất ${minCancelDays} ngày trước giờ khởi hành.`,
-    );
-    if (!ok) return;
-    setCancelling(true);
-    const res = await cancelMyBooking(row.id);
-    setCancelling(false);
-    if (!res.ok) {
-      setCancelErr(errorMessage(res.body));
-      return;
-    }
-    onRowUpdate(res.data);
-    setExpanded(false);
-  }
   const canReview =
     row.status === "COMPLETED" && isScheduleEnded(endDate);
   const canReviewSoon =
@@ -211,8 +378,7 @@ function BookingCard({
             {isCancellationPending ? (
               <div className="mt-3 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
                 <span className="text-xs text-amber-900">
-                  Yêu cầu hủy đã gửi — đang chờ admin xác nhận. Nếu được duyệt, hoàn tiền sẽ xử lý
-                  theo chính sách (thời điểm duyệt vẫn phải trong hạn hủy).
+                Yêu cầu hủy đã được gửi và đang chờ hệ thống xác nhận. Nếu được phê duyệt, việc hoàn tiền sẽ được xử lý theo chính sách hủy tour hiện hành.
                 </span>
               </div>
             ) : null}
@@ -259,11 +425,7 @@ function BookingCard({
         </div>
 
         {/* Form thao tác trên đơn: Xem chi tiết (mở rộng ngay tại đây) / Hủy */}
-        <form
-          onSubmit={onBookingActions}
-          className="mt-4 rounded-xl border border-stone-100 bg-stone-50/80 p-3"
-        >
-          <input type="hidden" name="bookingId" value={row.id} />
+        <div className="mt-4 rounded-xl border border-stone-100 bg-stone-50/80 p-3">
           <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-stone-400">
             Thao tác đặt chỗ
           </p>
@@ -308,89 +470,19 @@ function BookingCard({
 
             {canSubmitCancellation ? (
               <button
-                type="submit"
-                disabled={cancelling}
+                type="button"
+                disabled={cancellingBookingId === row.id}
+                onClick={() => onOpenCancelModal(row.id)}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60"
               >
-                {cancelling ? "Đang gửi…" : "Gửi yêu cầu hủy"}
+                {cancellingBookingId === row.id ? "Đang gửi…" : "Gửi yêu cầu hủy"}
               </button>
             ) : null}
           </div>
-          {cancelErr ? (
-            <p className="mt-2 text-xs text-red-600">{cancelErr}</p>
-          ) : null}
-        </form>
+        </div>
 
         {expanded ? (
-          <div className="mt-4 space-y-3 border-t border-stone-100 pt-4 text-sm text-stone-700">
-            <p className="text-xs font-semibold uppercase tracking-wide text-stone-400">
-              Chi tiết đặt chỗ
-            </p>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-stone-400">
-                Thông tin liên hệ
-              </p>
-              <p className="mt-1">
-                {row.contact?.fullName ?? "—"} ·{" "}
-                <span className="text-stone-500">{row.contact?.email ?? "—"}</span> ·{" "}
-                <span className="text-stone-500">{row.contact?.phone ?? "—"}</span>
-              </p>
-              {row.contact?.address ? (
-                <p className="mt-0.5 text-stone-500">{row.contact.address}</p>
-              ) : null}
-            </div>
-
-            {row.passengers && row.passengers.length > 0 ? (
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-stone-400">
-                  Hành khách ({row.passengers.length})
-                </p>
-                <ul className="mt-1 space-y-1">
-                  {row.passengers.map((p) => (
-                    <li key={p.id} className="flex items-center gap-2">
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                          p.ageCategory === "ADULT"
-                            ? "bg-blue-50 text-blue-600"
-                            : p.ageCategory === "CHILD"
-                              ? "bg-green-50 text-green-600"
-                              : "bg-orange-50 text-orange-600"
-                        }`}
-                      >
-                        {p.ageCategory === "ADULT"
-                          ? "Người lớn"
-                          : p.ageCategory === "CHILD"
-                            ? "Trẻ em"
-                            : "Em bé"}
-                      </span>
-                      <span className="text-stone-800">{p.fullName}</span>
-                      {p.dateOfBirth ? (
-                        <span className="text-xs text-stone-400">
-                          ({p.dateOfBirth})
-                        </span>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            {row.notes ? (
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-stone-400">
-                  Ghi chú
-                </p>
-                <p className="mt-1 text-stone-600">{row.notes}</p>
-              </div>
-            ) : null}
-
-            {row.bookingDateUtc ? (
-              <p className="text-xs text-stone-400">
-                Đặt lúc:{" "}
-                {new Date(row.bookingDateUtc).toLocaleString("vi-VN")}
-              </p>
-            ) : null}
-          </div>
+          <ExpandedBookingDetail row={row} />
         ) : null}
       </div>
     </li>
@@ -410,6 +502,54 @@ export default function BookingsHistoryPage() {
   const [lookupErr, setLookupErr] = useState<string | null>(null);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [highlightBookingId, setHighlightBookingId] = useState<number | null>(null);
+  const [cancelModalBookingId, setCancelModalBookingId] = useState<number | null>(
+    null,
+  );
+  const [cancelFlowToast, setCancelFlowToast] =
+    useState<BookingCornerToastPayload | null>(null);
+  const [cancellingBookingId, setCancellingBookingId] = useState<number | null>(
+    null,
+  );
+  const dismissCancelFlowToast = useCallback(() => setCancelFlowToast(null), []);
+
+  const cancelModalRow = useMemo(
+    () =>
+      cancelModalBookingId == null
+        ? undefined
+        : rows.find((r) => r.id === cancelModalBookingId),
+    [cancelModalBookingId, rows],
+  );
+
+  async function confirmCancelBookingFromModal() {
+    const row = cancelModalRow;
+    if (
+      row == null ||
+      !canSubmitBookingCancellation(row) ||
+      cancellingBookingId != null
+    ) {
+      return;
+    }
+    setCancelModalBookingId(null);
+    setCancellingBookingId(row.id);
+    setCancelFlowToast({ variant: "loading", message: "Đang gửi yêu cầu..." });
+    try {
+      const res = await cancelMyBooking(row.id);
+      if (!res.ok) {
+        setCancelFlowToast({
+          variant: "error",
+          message: errorMessage(res.body) || "Không thể gửi yêu cầu",
+        });
+        return;
+      }
+      setRows((prev) => prev.map((r) => (r.id === row.id ? res.data : r)));
+      setCancelFlowToast({
+        variant: "success",
+        message: "Đã gửi yêu cầu hủy thành công",
+      });
+    } finally {
+      setCancellingBookingId(null);
+    }
+  }
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -460,6 +600,29 @@ export default function BookingsHistoryPage() {
     const t = setTimeout(() => setHighlightBookingId(null), 5000);
     return () => clearTimeout(t);
   }, [highlightBookingId]);
+
+  /** Admin duyệt/từ chối hủy → server emit `booking_updated`; cập nhật danh sách không cần F5. */
+  useEffect(() => {
+    if (loading || authMissing) return;
+    if (!hasAccessToken()) return;
+    return subscribeToBookingUpdates(({ booking: nextBooking }) => {
+      setRows((prev) => {
+        const rawId = nextBooking?.id;
+        const bid =
+          typeof rawId === "number"
+            ? rawId
+            : typeof rawId === "string"
+              ? Number(rawId)
+              : NaN;
+        if (!Number.isFinite(bid)) return prev;
+        const idx = prev.findIndex((r) => r.id === bid);
+        if (idx === -1) return prev;
+        const copy = [...prev];
+        copy[idx] = nextBooking;
+        return copy;
+      });
+    });
+  }, [loading, authMissing]);
 
   async function onRepay(bookingId: number) {
     setErr(null);
@@ -521,7 +684,6 @@ export default function BookingsHistoryPage() {
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-stone-900">Đặt chỗ của tôi</h1>
-        <p className="mt-1 text-stone-500">Lịch sử và quản lý các đặt tour</p>
       </div>
 
       {!loading && !authMissing ? (
@@ -531,7 +693,6 @@ export default function BookingsHistoryPage() {
         >
           <p className="text-sm font-medium text-stone-800">Tra cứu theo mã đặt chỗ</p>
           <p className="mt-0.5 text-xs text-stone-500">
-            Mã hiển thị trên mỗi đơn (VD: <span className="font-mono">BK-42</span>). Chỉ xem được đơn của chính bạn.
           </p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="relative min-w-0 flex-1">
@@ -631,14 +792,23 @@ export default function BookingsHistoryPage() {
                 onRepay={onRepay}
                 paying={payingBookingId === row.id}
                 highlighted={highlightBookingId === row.id}
-                onRowUpdate={(next) =>
-                  setRows((prev) =>
-                    prev.map((r) => (r.id === next.id ? next : r)),
-                  )
-                }
+                cancellingBookingId={cancellingBookingId}
+                onOpenCancelModal={(id) => setCancelModalBookingId(id)}
               />
             ))}
           </ul>
+
+          <CancelBookingConfirmModal
+            open={cancelModalBookingId != null && cancelModalRow != null}
+            bookingId={cancelModalRow?.id ?? 0}
+            minCancelDays={cancelModalRow?.cancelMinDaysBeforeDeparture ?? 3}
+            onClose={() => setCancelModalBookingId(null)}
+            onConfirm={() => void confirmCancelBookingFromModal()}
+          />
+          <BookingCornerToast
+            toast={cancelFlowToast}
+            onDismiss={dismissCancelFlowToast}
+          />
         </>
       )}
 

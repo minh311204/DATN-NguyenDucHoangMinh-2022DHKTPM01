@@ -79,11 +79,11 @@ export const ContactInfoSchema = z.object({
 })
 
 export const PassengerCountsSchema = z.object({
-  /** Người lớn (12+), giá đủ */
+  /** Người lớn (sinh trước 18/05/2014), giá đủ */
   adults: z.number().int().min(0),
-  /** Trẻ em 5–11 tuổi, 1/2 giá */
+  /** Trẻ em (18/05/2014 – 17/05/2021), ~giá nhóm phụ */
   children: z.number().int().min(0),
-  /** Dưới 2 tuổi, miễn phí (vẫn tính chỗ nếu có giới hạn chỗ) */
+  /** Trẻ nhỏ (18/05/2021 – 17/05/2024), ~giá nhóm phụ */
   infants: z.number().int().min(0),
 })
 
@@ -104,6 +104,8 @@ export const BookingResponseSchema = z.object({
   status: BookingStatusSchema,
   contact: BookingContactResponseSchema,
   notes: z.string().nullable().optional(),
+  /** Chờ thanh toán — hết hạn thì client có thể bỏ qua khi kiểm tra trùng lịch */
+  expiredAtUtc: z.string().nullable().optional(),
   passengerCounts: z.object({
     adults: z.number(),
     children: z.number(),
@@ -151,7 +153,7 @@ export const TourBookingsGroupedResponseSchema = z.object({
 export const CreateBookingPassengerSchema = z.object({
   fullName: z.string().min(1),
   gender: z.string().nullable().optional(),
-  /** YYYY-MM-DD — dùng để khớp loại hành khách với độ tuổi tại ngày khởi hành */
+  /** YYYY-MM-DD — khớp loại với các mốc ngày sinh quy định (và không sau ngày khởi hành) */
   dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   ageCategory: BookingPassengerAgeCategorySchema,
 })
@@ -178,6 +180,12 @@ export const CreateBookingSchema = z
     singleRoomCount: z.number().int().min(0).max(100).optional().default(0),
     /** Mã giảm giá (server kiểm tra bảng PromoCode) */
     discountCode: z.string().max(64).optional(),
+    /**
+     * true = đặt cho chính mình (mặc định): server kiểm tra trùng khoảng
+     * khởi hành–kết thúc với booking PENDING (còn hạn) / CONFIRMED của user.
+     * false = đặt hộ: bỏ kiểm tra trùng lịch; bắt buộc đã đăng nhập.
+     */
+    bookingForSelf: z.boolean().optional().default(true),
   })
   .superRefine((data, ctx) => {
     const { adults, children, infants } = data.passengerCounts
@@ -192,7 +200,7 @@ export const CreateBookingSchema = z
     if (adults < 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Cần ít nhất một người lớn (12+)',
+        message: 'Cần ít nhất một người lớn',
         path: ['passengerCounts', 'adults'],
       })
     }

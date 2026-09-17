@@ -32,6 +32,7 @@ export default function PreferencesPage() {
   const [pref, setPref] = useState<UserPreference | null>(null);
   const [recommendations, setRecommendations] = useState<TourListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [recLoading, setRecLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -85,12 +86,19 @@ export default function PreferencesPage() {
     });
     if (!res.ok) {
       setErr(errorMessage(res.body));
-    } else {
-      setPref(res.data);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
+      setSaving(false);
+      return;
     }
+    setPref(res.data);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 3000);
     setSaving(false);
+
+    /** Đồng bộ lại gợi ý theo sở thích vừa cập nhật. */
+    setRecLoading(true);
+    const recRes = await fetchRecommendations(8);
+    if (recRes.ok) setRecommendations(recRes.data);
+    setRecLoading(false);
   }
 
   if (!mounted || loading) {
@@ -210,17 +218,28 @@ export default function PreferencesPage() {
       </form>
 
       {/* Recommendations */}
-      {recommendations.length > 0 ? (
+      {recLoading || recommendations.length > 0 ? (
         <section className="mt-10">
           <div className="mb-4 flex items-center gap-2">
             <TrendingUp className="h-5 w-5 text-teal-600" />
             <h2 className="text-lg font-bold text-stone-900">Tour gợi ý cho bạn</h2>
+            {recLoading ? (
+              <span className="text-xs text-stone-500">Đang cập nhật theo sở thích…</span>
+            ) : null}
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {recommendations.slice(0, 4).map((tour) => (
-              <TourCard key={tour.id} tour={tour} />
-            ))}
-          </div>
+          {recLoading && recommendations.length === 0 ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="h-48 animate-pulse rounded-xl bg-stone-100" />
+              ))}
+            </div>
+          ) : (
+            <div className={`grid gap-4 sm:grid-cols-2 ${recLoading ? "opacity-60" : ""}`}>
+              {recommendations.slice(0, 4).map((tour) => (
+                <TourCard key={tour.id} tour={tour} />
+              ))}
+            </div>
+          )}
           {recommendations.length > 4 ? (
             <div className="mt-4 text-center">
               <Link

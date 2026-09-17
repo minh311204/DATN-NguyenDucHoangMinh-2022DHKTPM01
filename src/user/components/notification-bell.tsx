@@ -181,6 +181,13 @@ export function NotificationBell({ isHome = false }: { isHome?: boolean }) {
     if (!open) {
       setOpen(true);
       await loadNotifications();
+      const markRes = await markAllNotificationsRead();
+      if (markRes.ok) {
+        setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+        setCount(0);
+      } else {
+        void loadCount();
+      }
     } else {
       setOpen(false);
     }

@@ -31,9 +31,13 @@ export class TourController {
   }
 
   @TsRestHandler(tourContract.getTours)
-  getTours() {
+  @UseGuards(OptionalJwtAuthGuard)
+  getTours(@CurrentUser() user?: { role?: string }) {
     return async ({ query }: { query: Record<string, unknown> }) => {
-      const body = await this.tourService.getTours(query as any)
+      const canQueryInactive = user?.role === 'ADMIN'
+      const body = await this.tourService.getTours(query as any, {
+        canQueryInactive,
+      })
       return { status: 200, body }
     }
   }

@@ -6,7 +6,7 @@ export const TourTagResponseSchema = z.object({
   id: z.number(),
   name: z.string(),
   description: z.string().nullable().optional(),
-  /** Số tour đang gắn danh mục (chỉ một số API trả về) */
+  /** Số tour đang hoạt động (nhãn TourTag hoặc đúng dòng tour nếu tên khớp Cao cấp / Tiêu chuẩn / …) */
   tourCount: z.number().int().nonnegative().optional(),
 })
 
@@ -50,6 +50,14 @@ export const CreateTourVideoSchema = z.object({
 
 /** ========================= Schedule ========================= */
 
+/** Trạng thái lịch khởi hành (TourSchedule.status) — khớp seed & filter list */
+export const TourScheduleStatusSchema = z.enum([
+  'OPEN',
+  'ACTIVE',
+  'FULL',
+  'CANCELLED',
+])
+
 export const TourScheduleResponseSchema = z.object({
   id: z.number(),
   tourId: z.number(),
@@ -59,18 +67,42 @@ export const TourScheduleResponseSchema = z.object({
   bookedSeats: z.number().nullable().optional(),
   priceOverride: z.number().nullable().optional(),
   status: z.string().nullable().optional(),
+  /** ISO datetime — có khi đã ẩn khỏi site user (admin vẫn nhận bản ghi) */
+  deletedAt: z.string().datetime().nullable().optional(),
 })
 
-export const CreateTourScheduleSchema = z.object({
-  startDate: z.string().datetime(),
-  endDate: z.string().datetime(),
-  availableSeats: z.number().int().optional(),
-  bookedSeats: z.number().int().optional(),
-  priceOverride: z.number().optional(),
-  status: z.string().optional(),
-})
+export const CreateTourScheduleSchema = z
+  .object({
+    startDate: z.string().datetime(),
+    endDate: z.string().datetime(),
+    availableSeats: z.number().int().min(1).optional(),
+    priceOverride: z.number().optional(),
+    status: TourScheduleStatusSchema.optional(),
+  })
+  .refine(
+    (d) => new Date(d.endDate) > new Date(d.startDate),
+    'endDate must be after startDate',
+  )
 
-export const UpdateTourScheduleSchema = CreateTourScheduleSchema.partial()
+export const UpdateTourScheduleSchema = z
+  .object({
+    startDate: z.string().datetime().optional(),
+    endDate: z.string().datetime().optional(),
+    availableSeats: z.number().int().min(1).optional(),
+    priceOverride: z.number().optional(),
+    status: z
+      .union([TourScheduleStatusSchema, z.string().max(64)])
+      .optional(),
+  })
+  .refine(
+    (d) => {
+      if (d.startDate != null && d.endDate != null) {
+        return new Date(d.endDate) > new Date(d.startDate)
+      }
+      return true
+    },
+    { message: 'endDate must be after startDate', path: ['endDate'] },
+  )
 
 /** ========================= Enums ========================= */
 
@@ -328,49 +360,105 @@ export const TourDetailResponseSchema = z.object({
   transports: z.array(TourTransportResponseSchema),
 })
 
-export const CreateTourSchema = z.object({
-  departureLocationId: z.number().int(),
-  destinationLocationId: z.number().int(),
-  name: z.string().min(1),
-  slug: z.string().optional(),
-  description: z.string().optional(),
-  durationDays: z.number().int().optional(),
-  basePrice: z.number().optional(),
-  maxPeople: z.number().int().optional(),
-  thumbnailUrl: z.string().optional(),
-  tourLine: TourLineSchema.optional(),
-  transportType: TransportTypeSchema.optional(),
-  isActive: z.boolean().optional().default(true),
-  isFeatured: z.boolean().optional().default(false),
-  inclusions: z.string().optional(),
-  exclusions: z.string().optional(),
-  cancellationPolicy: z.string().optional(),
-  tagIds: z.array(z.number().int()).optional(),
-  images: z.array(CreateTourImageSchema).optional(),
-  videos: z.array(CreateTourVideoSchema).optional(),
-  schedules: z.array(CreateTourScheduleSchema).optional(),
-  itineraries: z.array(CreateTourItinerarySchema).optional(),
-})
+export const CreateTourSchema = z
+  .object({
+    departureLocationId: z.number().int(),
+    destinationLocationId: z.number().int(),
+    name: z.string().min(1),
+    slug: z.string().optional(),
+    description: z.string().optional(),
+    durationDays: z.number().int().optional(),
+    basePrice: z.number().optional(),
+    maxPeople: z.number().int().optional(),
+    thumbnailUrl: z.string().optional(),
+    tourLine: TourLineSchema.optional(),
+    transportType: TransportTypeSchema.optional(),
+    isActive: z.boolean().optional().default(true),
+    isFeatured: z.boolean().optional().default(false),
+    inclusions: z.string().optional(),
+    exclusions: z.string().optional(),
+    cancellationPolicy: z.string().optional(),
+    tagIds: z.array(z.number().int()).optional(),
+    images: z.array(CreateTourImageSchema).optional(),
+    videos: z.array(CreateTourVideoSchema).optional(),
+    schedules: z.array(CreateTourScheduleSchema).optional(),
+    itineraries: z.array(CreateTourItinerarySchema).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.durationDays != null && data.durationDays < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'durationDays must be >= 1',
+        path: ['durationDays'],
+      })
+    }
+    if (data.basePrice != null && data.basePrice <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'basePrice must be > 0',
+        path: ['basePrice'],
+      })
+    }
+    if (data.maxPeople != null && data.maxPeople < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'maxPeople must be >= 1',
+        path: ['maxPeople'],
+      })
+    }
+    const slug = data.slug?.trim()
+    if (slug) {
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(slug)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid slug format',
+          path: ['slug'],
+        })
+      }
+    }
+    const thumb = data.thumbnailUrl?.trim()
+    if (thumb) {
+      try {
+        void new URL(thumb)
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid thumbnail URL',
+          path: ['thumbnailUrl'],
+        })
+      }
+    }
+  })
 
-export const UpdateTourSchema = z.object({
-  departureLocationId: z.number().int().optional(),
-  destinationLocationId: z.number().int().optional(),
-  name: z.string().min(1).optional(),
-  slug: z.string().nullable().optional(),
-  description: z.string().nullable().optional(),
-  durationDays: z.number().int().nullable().optional(),
-  basePrice: z.number().nullable().optional(),
-  maxPeople: z.number().int().nullable().optional(),
-  thumbnailUrl: z.string().nullable().optional(),
-  tourLine: TourLineSchema.nullable().optional(),
-  transportType: TransportTypeSchema.nullable().optional(),
-  isActive: z.boolean().nullable().optional(),
-  isFeatured: z.boolean().nullable().optional(),
-  inclusions: z.string().nullable().optional(),
-  exclusions: z.string().nullable().optional(),
-  cancellationPolicy: z.string().nullable().optional(),
-  tagIds: z.array(z.number().int()).optional(),
-})
+export const UpdateTourSchema = z
+  .object({
+    departureLocationId: z.number().int().optional(),
+    destinationLocationId: z.number().int().optional(),
+    name: z.string().min(1).optional(),
+    slug: z.string().nullable().optional(),
+    description: z.string().nullable().optional(),
+    durationDays: z.number().int().nullable().optional(),
+    basePrice: z.number().nullable().optional(),
+    maxPeople: z.number().int().nullable().optional(),
+    thumbnailUrl: z.string().nullable().optional(),
+    tourLine: TourLineSchema.nullable().optional(),
+    transportType: TransportTypeSchema.nullable().optional(),
+    isActive: z.boolean().nullable().optional(),
+    isFeatured: z.boolean().nullable().optional(),
+    inclusions: z.string().nullable().optional(),
+    exclusions: z.string().nullable().optional(),
+    cancellationPolicy: z.string().nullable().optional(),
+    tagIds: z.array(z.number().int()).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.basePrice != null && data.basePrice <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'basePrice must be > 0',
+        path: ['basePrice'],
+      })
+    }
+  })
 
 export const SetTourTagsSchema = z.object({
   tagIds: z.array(z.number().int()),
@@ -391,7 +479,10 @@ export const TourListQuerySchema = z.object({
     .optional(),
   tourLine: TourLineSchema.optional(),
   transportType: TransportTypeSchema.optional(),
-  /** Chỉ tour đang gắn TourTag này */
+  /**
+   * Lọc theo danh mục (TourTag): có mapping HOẶC khớp Dòng tour nếu tên tag trùng
+   * Cao cấp / Tiêu chuẩn / … (xem catalog-tag-tour-line backend).
+   */
   tagId: z.coerce.number().int().optional(),
   /** Chỉ lấy tour gắn cờ nổi bật (Tour nổi bật) */
   featured: z.enum(['true', 'false']).optional(),

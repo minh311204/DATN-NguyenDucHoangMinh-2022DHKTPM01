@@ -20,11 +20,15 @@ describe('AuthService', () => {
     signAsync: jest.fn(),
   } as any
 
+  const mockMail = {
+    sendEmailVerificationEmail: jest.fn(),
+  } as any
+
   let service: AuthService
 
   beforeEach(() => {
     jest.clearAllMocks()
-    service = new AuthService(mockPrisma, mockJwt)
+    service = new AuthService(mockPrisma, mockJwt, mockMail)
   })
 
   it('rejects refresh token for non-active users', async () => {

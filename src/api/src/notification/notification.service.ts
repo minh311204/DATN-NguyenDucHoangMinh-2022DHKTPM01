@@ -1,6 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prima.service'
-import { NotificationGateway } from './notification.gateway'
+import {
+  NotificationGateway,
+  type BookingUpdatedRealtimePayload,
+} from './notification.gateway'
 
 function mapNotification(n: any) {
   return {
@@ -33,6 +36,12 @@ export class NotificationService {
     const { count: unreadCount } = await this.getUnreadCount(userId)
     this.gateway.emitToUser(userId, { notification: mapped, unreadCount })
     return mapped
+  }
+
+  /** Realtime cập nhật một booking trong danh sách khách (đã map giống API list). */
+  emitBookingUpdated(userId: number, booking: Record<string, unknown>) {
+    const payload: BookingUpdatedRealtimePayload = { booking }
+    this.gateway.emitBookingUpdated(userId, payload)
   }
 
   async getNotifications(

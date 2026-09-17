@@ -12,6 +12,7 @@ import {
 import { FilterSidebar } from "@/components/filter-sidebar";
 import { FavoritesToolbar } from "@/components/favorites-toolbar";
 import type { ToolbarSortKey } from "@/components/favorites-toolbar";
+import { TourScheduleStrip } from "@/components/tour-schedule-strip";
 
 type Props = {
   params: Promise<{ provinceId: string }>;
@@ -92,15 +93,6 @@ function transportLabel(v?: string | null): string {
   if (v === "BUS" || v === "CAR") return "Xe";
   if (v === "MIXED") return "Kết hợp";
   return v;
-}
-
-function formatScheduleDate(isoDate: string | null | undefined): string {
-  if (!isoDate) return "";
-  const d = new Date(isoDate);
-  if (isNaN(d.getTime())) return "";
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
-  return `${day}/${month}`;
 }
 
 export default async function FavoritesProvincePage({ params, searchParams }: Props) {
@@ -263,25 +255,11 @@ export default async function FavoritesProvincePage({ params, searchParams }: Pr
                         </p>
                       </div>
 
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        <CalendarDays className="h-3.5 w-3.5 text-stone-400" />
-                        <span className="text-[13px] text-stone-700">Ngày khởi hành:</span>
-                        {t.schedules && t.schedules.length > 0 ? (
-                          t.schedules.map((s, i) => (
-                            <span
-                              key={s.id}
-                              className={`rounded border px-2 py-0.5 text-xs font-semibold ${
-                                i === 0
-                                  ? "border-[#0b5ea8] bg-[#0b5ea8] text-white"
-                                  : "border-[#ff8f8f] text-[#de3a3a]"
-                              }`}
-                            >
-                              {formatScheduleDate(s.startDate)}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-xs text-stone-400">Chưa có lịch</span>
-                        )}
+                      <div className="mt-3 min-w-0 text-[13px] text-stone-700">
+                        <TourScheduleStrip
+                          schedules={t.schedules ?? []}
+                          tourId={String(t.id)}
+                        />
                       </div>
 
                       <div className="mt-3 flex items-end justify-between gap-3">

@@ -388,10 +388,40 @@ body {
   }
 }
 
-/* ===== Tour detail: hide site header when tab bar is active ===== */
-body.tour-detail-tabs-visible > header {
-  visibility: hidden;
-  pointer-events: none;
+/* Chip ngày khởi hành trên thẻ tour — hover/focus: nền đỏ tươi + chữ trắng */
+.tour-date-chip {
+  border: 1px solid #d92d20;
+  background-color: #ffffff;
+  color: #d92d20;
+  border-radius: 0.25rem;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.tour-date-chip:hover {
+  background-color: #d92d20;
+  color: #ffffff;
+  border-color: #d92d20;
+}
+
+.tour-date-chip:focus-visible {
+  background-color: #d92d20;
+  color: #ffffff;
+  border-color: #d92d20;
+  outline: none;
+}
+
+.tour-date-chip:active {
+  background-color: #d92d20;
+  color: #ffffff;
+  border-color: #d92d20;
+}
+
+/* Mặc định / đang chọn: cùng kiểu viền đỏ + nền trắng — nền đỏ chỉ khi :hover / :focus-visible ở trên */
+.tour-date-chip.tour-date-chip--selected {
+  font-weight: 600;
 }
 
 /* ===== Favorites masonry thumbnails ===== */

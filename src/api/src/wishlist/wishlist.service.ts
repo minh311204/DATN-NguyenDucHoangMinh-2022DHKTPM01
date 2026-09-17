@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -69,7 +70,10 @@ export class WishlistService {
 
   async getMyWishlist(userId: number) {
     const items = await this.prisma.wishlist.findMany({
-      where: { userId },
+      where: {
+        userId,
+        tour: { isActive: true },
+      },
       include: { tour: { select: tourSelect } },
       orderBy: { createdAtUtc: 'desc' },
     })
@@ -82,6 +86,9 @@ export class WishlistService {
       select: tourSelect,
     })
     if (!tour) throw new NotFoundException('Tour not found')
+    if (tour.isActive !== true) {
+      throw new BadRequestException('Tour không còn mở bán')
+    }
 
     const existing = await this.prisma.wishlist.findUnique({
       where: { userId_tourId: { userId, tourId } },
@@ -116,6 +123,12 @@ export class WishlistService {
   }
 
   async checkWishlist(userId: number, tourId: number) {
+    const tour = await this.prisma.tour.findUnique({
+      where: { id: tourId },
+      select: { isActive: true },
+    })
+    if (tour?.isActive !== true) return { inWishlist: false }
+
     const item = await this.prisma.wishlist.findUnique({
       where: { userId_tourId: { userId, tourId } },
       select: { id: true },

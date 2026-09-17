@@ -239,6 +239,11 @@ export function deleteTourTag(id: number) {
   return apiDelete<{ message: string }>(`/tours/tags/${id}`);
 }
 
+/** PUT /tours/:id/tags — ADMIN. Gán danh sách nhãn cho một tour (replace toàn bộ). */
+export function setTourTags(tourId: number, tagIds: number[]) {
+  return apiPut<TourDetail>(`/tours/${tourId}/tags`, { tagIds });
+}
+
 export function fetchLocations(init?: NextFetch) {
   return apiGet<LocationRow[]>(`/locations/locations`, init);
 }

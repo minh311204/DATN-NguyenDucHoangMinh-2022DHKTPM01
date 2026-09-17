@@ -55,7 +55,7 @@ function QuickSearchForm() {
         name="q"
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        placeholder="Tìm tour theo tên…"
+        placeholder=""
         autoComplete="off"
         className="h-10 w-48 rounded-xl border border-slate-200/90 bg-slate-50/90 pl-9 pr-3 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 transition focus:border-sky-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 lg:w-64"
         aria-label="Tìm nhanh tour"

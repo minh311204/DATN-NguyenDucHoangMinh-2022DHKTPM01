@@ -62,6 +62,7 @@ export const UserResponseSchema = z.object({
   email: z.string(),
   firstName: z.string().nullable(),
   lastName: z.string().nullable(),
+  phone: z.string().nullable(),
   status: z.enum(['ACTIVE', 'INACTIVE', 'BANNED']),
   role: z.enum(['ADMIN', 'USER']),
   hasPassword: z.boolean(),

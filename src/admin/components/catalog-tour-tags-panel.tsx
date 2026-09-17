@@ -28,7 +28,7 @@ const inputClass =
 function exportTagsToCsv(tags: TourTagRow[]) {
   const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
   const lines = [
-    ["Tên danh mục", "Mô tả", "Số tour"].join(","),
+    ["Tên danh mục", "Mô tả", "Số tour đang hoạt động"].join(","),
     ...tags.map((r) =>
       [
         esc(r.name),
@@ -371,7 +371,7 @@ export function CatalogTourTagsPanel() {
               {viewRow.tourCount != null ? (
                 <div>
                   <dt className="font-medium text-slate-500">
-                    Số tour đang gắn
+                    Số tour đang hoạt động
                   </dt>
                   <dd className="mt-0.5 tabular-nums text-slate-900">
                     {viewRow.tourCount}

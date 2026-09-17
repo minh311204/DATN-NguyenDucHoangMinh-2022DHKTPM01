@@ -350,12 +350,16 @@ model TourSchedule {
   priceOverride Decimal?
   status String?
 
+  /** Xóa mềm: ẩn lịch trên site user khi toàn bộ lịch tour đã kết thúc; admin vẫn thấy */
+  deletedAt DateTime?
+
   tour Tour @relation(fields: [tourId], references: [id])
 
   bookings Booking[]
 
   @@index([startDate])
   @@index([tourId, startDate])
+  @@index([tourId, deletedAt])
 }
 
 model TourItinerary {
@@ -709,7 +713,7 @@ model ChatMessage {
   sessionId Int
 
   role String
-  content String
+  content String @db.LongText
 
   createdAtUtc DateTime? @default(now())
 

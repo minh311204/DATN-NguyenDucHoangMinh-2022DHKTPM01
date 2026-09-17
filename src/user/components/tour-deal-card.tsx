@@ -1,16 +1,13 @@
+"use client";
+
 import Link from "next/link";
-import {
-  Calendar,
-  Clock,
-  MapPin,
-  Tag,
-  Timer,
-  Users,
-} from "lucide-react";
+import { Calendar, Clock, MapPin, Tag, Timer, Users } from "lucide-react";
 import type { TourListItem } from "@/lib/api-types";
 import { formatVnd } from "@/lib/format";
 import { WishlistButton } from "./wishlist-button";
 import { DealCountdown } from "./deal-countdown";
+import { TourScheduleStrip } from "./tour-schedule-strip";
+import { tourDetailScheduleHref } from "@/lib/tour-detail-nav";
 
 const gradients = [
   "from-cyan-600 to-blue-800",
@@ -24,17 +21,6 @@ function pickGradient(id: number) {
   return gradients[Math.abs(id) % gradients.length];
 }
 
-function formatDepartureYmd(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("vi-VN", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-}
-
 /** VD: 5 ngày → "5N4Đ" (gần cách ghi tour phổ biến) */
 function formatDurationShort(days: number | null | undefined): string {
   if (days == null || days < 1) return "—";
@@ -43,21 +29,56 @@ function formatDurationShort(days: number | null | undefined): string {
   return `${n}N${d}Đ`;
 }
 
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+/** Một suất cố định theo tourId (ổn định giữa các lần render, phân bố trong danh sách lịch) */
+function pickFeaturedScheduleIndex(tourId: number, len: number): number {
+  if (len <= 0) return 0;
+  return Math.abs((tourId * 7919 + len * 37) % len);
+}
+
+function formatDdMmUtcFromIso(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${pad2(d.getUTCDate())}/${pad2(d.getUTCMonth() + 1)}`;
+}
+
+function utcYmdFromIso(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}
+
 type Props = {
   tour: TourListItem;
   /** `deal`: giờ chót + giá niêm yết gạch (khuyến mãi). `catalog`: cùng layout, không khuyến mãi. */
   variant?: "deal" | "catalog";
+  /** Cùng layout «1 ngày + số chỗ» với carousel trang chủ — khớp ngày & đếm ngược khi xem /tours?featured=true */
+  homeFeatured?: boolean;
 };
 
-export function TourDealCard({ tour, variant = "deal" }: Props) {
+export function TourDealCard({
+  tour,
+  variant = "deal",
+  homeFeatured = false,
+}: Props) {
   const showPromo = variant === "deal";
   const id = String(tour.id);
   const dep = tour.departureLocation?.name ?? "—";
   const schedules = tour.schedules ?? [];
-  const first = schedules[0];
-  const startIso = first?.startDate ?? null;
-  const remainingSeats =
-    first?.remainingSeats ?? tour.maxPeople ?? null;
+  const withDates = schedules.filter((s) => s.startDate);
+  const featuredIdx = pickFeaturedScheduleIndex(tour.id, withDates.length);
+  const featuredSchedule =
+    homeFeatured && withDates.length > 0 ? withDates[featuredIdx] : undefined;
+  const startIso = homeFeatured
+    ? (featuredSchedule?.startDate ?? schedules[0]?.startDate ?? null)
+    : (schedules[0]?.startDate ?? null);
+  const featuredYmd = utcYmdFromIso(featuredSchedule?.startDate ?? null);
+  const featuredSeats = featuredSchedule?.remainingSeats ?? null;
 
   const deadlineMs = showPromo
     ? (() => {
@@ -79,8 +100,15 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
 
   const gradient = pickGradient(tour.id);
 
+  const detailHref =
+    variant === "catalog"
+      ? `/tours/${id}`
+      : showPromo && homeFeatured && featuredYmd
+        ? tourDetailScheduleHref(id, { dateYmd: featuredYmd })
+        : `/tours/${id}`;
+
   return (
-    <article className="group flex h-full w-full max-w-[320px] flex-col overflow-hidden rounded-xl border border-stone-200/80 bg-white shadow-sm ring-1 ring-black/[0.03] transition duration-300 ease-out hover:-translate-y-1 hover:shadow-lg hover:ring-black/[0.06] sm:max-w-none">
+    <article className="group flex h-full w-full max-w-[320px] flex-col overflow-hidden rounded-xl border border-stone-200/80 bg-white shadow-sm ring-1 ring-black/[0.03] transition duration-300 ease-out will-change-transform hover:-translate-y-1 hover:shadow-lg hover:ring-black/[0.06] sm:max-w-none">
       <div className="relative h-[168px] shrink-0 overflow-hidden bg-stone-100 sm:h-[180px]">
         {tour.thumbnailUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -94,7 +122,13 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
             className={`h-full w-full bg-gradient-to-br ${gradient} opacity-95`}
           />
         )}
-        <div className="absolute left-2 top-2 z-10">
+        <Link
+          href={detailHref}
+          tabIndex={-1}
+          aria-hidden
+          className="absolute inset-0 z-10 focus:outline-none"
+        />
+        <div className="absolute left-2 top-2 z-20">
           <WishlistButton
             tourId={tour.id}
             tourName={tour.name}
@@ -102,12 +136,12 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
           />
         </div>
         {showPromo ? (
-          <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-2 border-t border-stone-100 bg-white/95 px-2.5 py-1.5 text-[11px] backdrop-blur-sm sm:text-xs">
-            <span className="flex items-center gap-1 font-semibold text-sky-700">
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-[15] flex flex-wrap items-end justify-between gap-x-2 gap-y-0.5 border-t border-stone-100 bg-white/95 px-2.5 py-1.5 text-[11px] backdrop-blur-sm sm:text-xs">
+            <span className="flex shrink-0 items-center gap-1 font-semibold text-sky-700">
               <Clock className="h-3.5 w-3.5 shrink-0" />
               Giờ chót
             </span>
-            <span className="text-red-600">
+            <span className="min-w-0 flex-1 basis-0 text-right text-[10px] leading-tight text-red-600 sm:text-xs">
               <DealCountdown deadlineMs={deadlineMs} />
             </span>
           </div>
@@ -115,8 +149,13 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
       </div>
 
       <div className="flex flex-1 flex-col p-3">
-        <h3 className="line-clamp-2 min-h-[2.5rem] text-sm font-bold leading-snug text-stone-900">
-          {tour.name}
+        <h3 className="line-clamp-2 min-h-[2.5rem] text-sm font-bold leading-snug">
+          <Link
+            href={detailHref}
+            className="text-stone-900 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/70 focus-visible:ring-offset-2"
+          >
+            {tour.name}
+          </Link>
         </h3>
         <p className="mt-1 flex items-center gap-1 text-[11px] text-stone-400">
           <Tag className="h-3 w-3 shrink-0" />
@@ -143,22 +182,55 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
               <span className="font-medium text-sky-700">{dep}</span>
             </span>
           </p>
-          <p className="flex items-start gap-1.5">
-            <Calendar className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stone-400" />
-            <span>Ngày khởi hành: {formatDepartureYmd(startIso)}</span>
-          </p>
+          <div className="min-w-0">
+            {showPromo && homeFeatured ? (
+              <>
+                {featuredSchedule?.startDate && featuredYmd ? (
+                  <div className="flex min-w-0 flex-wrap items-start gap-1.5">
+                    <Calendar
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stone-400"
+                      aria-hidden
+                    />
+                    <span className="mt-0.5 shrink-0 leading-snug">
+                      Ngày khởi hành:
+                    </span>
+                    <Link
+                      href={tourDetailScheduleHref(id, { dateYmd: featuredYmd })}
+                      scroll={false}
+                      className="tour-date-chip relative z-[1] inline-flex px-2 py-0.5 text-[11px] font-medium tabular-nums sm:text-xs no-underline"
+                    >
+                      {formatDdMmUtcFromIso(featuredSchedule.startDate)}
+                    </Link>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-1.5 text-[11px] text-stone-500 sm:text-xs">
+                    <Calendar
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stone-400"
+                      aria-hidden
+                    />
+                    <span className="mt-0.5 leading-snug text-stone-600">
+                      Ngày khởi hành:
+                    </span>
+                    <span>Đang cập nhật</span>
+                  </div>
+                )}
+                <p className="mt-1.5 flex items-start gap-1.5">
+                  <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stone-400" />
+                  <span>
+                    Số chỗ còn:{" "}
+                    <span className="font-semibold text-red-600">
+                      {featuredSeats != null ? featuredSeats : "—"}
+                    </span>
+                  </span>
+                </p>
+              </>
+            ) : (
+              <TourScheduleStrip schedules={schedules} tourId={id} />
+            )}
+          </div>
           <p className="flex items-start gap-1.5">
             <Timer className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stone-400" />
             <span>{formatDurationShort(tour.durationDays)}</span>
-          </p>
-          <p className="flex items-start gap-1.5">
-            <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stone-400" />
-            <span>
-              Số chỗ còn:{" "}
-              <span className="font-semibold text-red-600">
-                {remainingSeats != null ? remainingSeats : "—"}
-              </span>
-            </span>
           </p>
         </div>
 
@@ -183,7 +255,7 @@ export function TourDealCard({ tour, variant = "deal" }: Props) {
             </p>
           </div>
           <Link
-            href={`/tours/${id}`}
+            href={detailHref}
             className="shrink-0 rounded border border-red-500 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 transition duration-200 hover:bg-red-50 active:scale-[0.98]"
           >
             Đặt ngay

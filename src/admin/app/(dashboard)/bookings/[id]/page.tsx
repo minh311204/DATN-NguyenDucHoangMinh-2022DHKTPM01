@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Save } from "lucide-react";
 import { AdminHeader } from "@/components/admin-header";
 import type { BookingDetail, BookingStatus } from "@/lib/api-types";
@@ -19,6 +19,20 @@ import {
   formatVnd,
   labelBookingStatus,
 } from "@/lib/format";
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Khớp server `assertWithinCancellationWindow`: tại `atMs` phải còn ít nhất `minDays` ngày (24h) trước giờ khởi hành mới được duyệt hủy có điều kiện hoàn tiền. */
+function canApproveCancellationRefundAt(
+  startDateIso: string | undefined | null,
+  minDays: number,
+  atMs: number,
+): boolean {
+  if (minDays <= 0) return true;
+  if (!startDateIso) return false;
+  const dep = new Date(startDateIso).getTime();
+  return dep - atMs >= minDays * MS_PER_DAY;
+}
 
 const STATUS_OPTIONS: BookingStatus[] = [
   "PENDING",
@@ -85,9 +99,18 @@ export default function AdminBookingDetailPage() {
     router.refresh();
   }
 
+  const approveRefundWithinPolicy = useMemo(() => {
+    if (!booking || booking.cancellationRequestState !== "PENDING") return true;
+    return canApproveCancellationRefundAt(
+      booking.schedule?.startDate,
+      booking.cancelMinDaysBeforeDeparture ?? 0,
+      Date.now(),
+    );
+  }, [booking]);
+
   async function onApproveCancellation(e: React.FormEvent) {
     e.preventDefault();
-    if (!booking) return;
+    if (!booking || !approveRefundWithinPolicy) return;
     setCancelAction("approve");
     setErr(null);
     const res = await approveBookingCancellation(booking.id);
@@ -192,14 +215,32 @@ export default function AdminBookingDetailPage() {
                     </strong>
                     . Chỉ chấp nhận hủy có điều kiện hoàn tiền khi thời điểm duyệt vẫn còn ít nhất{" "}
                     <strong>{booking.cancelMinDaysBeforeDeparture} ngày</strong> trước giờ
-                    khởi hành.
+                    khởi hành (Ngày khởi hành tour:{" "}
+                    <strong>{formatDateVi(booking.schedule.startDate)}</strong>
+                    ).
                   </p>
+                  {!approveRefundWithinPolicy ? (
+                    <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
+                      <strong>Hết thời hạn duyệt hoàn tiền có điều kiện.</strong> Hiện tại đã không còn
+                      đủ {booking.cancelMinDaysBeforeDeparture} ngày trước giờ khởi hành, nên hệ thống{" "}
+                      <strong>không cho phép</strong> bấm &quot;Chấp nhận hủy&quot; theo chính sách này.
+                      Bạn có thể &quot;Từ chối yêu cầu&quot; hoặc xử lý thủ công / đổi trạng thái booking nếu
+                      có quy trình riêng.
+                    </div>
+                  ) : null}
                   <div className="mt-4 flex flex-wrap gap-3">
                     <form onSubmit={onApproveCancellation}>
                       <button
                         type="submit"
-                        disabled={cancelAction !== null}
-                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                        disabled={
+                          cancelAction !== null || !approveRefundWithinPolicy
+                        }
+                        title={
+                          !approveRefundWithinPolicy
+                            ? "Đã quá thời hạn: không đủ số ngày trước khởi hành để duyệt hủy có điều kiện hoàn tiền."
+                            : undefined
+                        }
+                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {cancelAction === "approve"
                           ? "Đang xử lý…"

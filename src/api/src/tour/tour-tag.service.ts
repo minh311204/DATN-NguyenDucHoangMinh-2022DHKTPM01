@@ -3,6 +3,7 @@ import {
   NotFoundException,
 } from '@nestjs/common'
 import { PrismaService } from '../prisma/prima.service'
+import { catalogTagTourWhereClause } from './catalog-tag-tour-line'
 
 type TagRow = {
   id: number
@@ -20,15 +21,27 @@ export class TourTagService {
       id: number
       name: string
       description: string | null
-      _count?: { tours: number }
     },
+    tourCount: number,
   ): TagRow {
     return {
       id: t.id,
       name: t.name,
       description: t.description,
-      ...(t._count != null ? { tourCount: t._count.tours } : {}),
+      tourCount,
     }
+  }
+
+  private async countActiveToursForCatalogTag(
+    tagId: number,
+    tagName: string,
+  ): Promise<number> {
+    return this.prisma.tour.count({
+      where: {
+        isActive: true,
+        ...catalogTagTourWhereClause(tagId, tagName),
+      },
+    })
   }
 
   async getTags(q?: string) {
@@ -46,9 +59,11 @@ export class TourTagService {
     const tags = await this.prisma.tourTag.findMany({
       where,
       orderBy: { name: 'asc' },
-      include: { _count: { select: { tours: true } } },
     })
-    return tags.map((t) => this.toDto(t))
+    const counts = await Promise.all(
+      tags.map((t) => this.countActiveToursForCatalogTag(t.id, t.name)),
+    )
+    return tags.map((t, i) => this.toDto(t, counts[i] ?? 0))
   }
 
   async createTag(data: { name: string; description?: string | null }) {
@@ -60,9 +75,9 @@ export class TourTagService {
 
     const tag = await this.prisma.tourTag.create({
       data: { name, description },
-      include: { _count: { select: { tours: true } } },
     })
-    return this.toDto(tag)
+    const tourCount = await this.countActiveToursForCatalogTag(tag.id, tag.name)
+    return this.toDto(tag, tourCount)
   }
 
   async updateTag(
@@ -86,9 +101,9 @@ export class TourTagService {
         ...(nextName !== undefined ? { name: nextName } : {}),
         ...(nextDesc !== undefined ? { description: nextDesc } : {}),
       },
-      include: { _count: { select: { tours: true } } },
     })
-    return this.toDto(tag)
+    const tourCount = await this.countActiveToursForCatalogTag(tag.id, tag.name)
+    return this.toDto(tag, tourCount)
   }
 
   async deleteTag(id: number) {

@@ -55,10 +55,6 @@ function DetailView({ tour }: { tour: TourDetail }) {
           </dd>
         </div>
         <div>
-          <dt className="text-slate-500">Số khách tối đa</dt>
-          <dd className="text-slate-900">{tour.maxPeople ?? "—"}</dd>
-        </div>
-        <div>
           <dt className="text-slate-500">Dòng tour / Phương tiện</dt>
           <dd className="text-slate-900">
             {labelTourLine(tour.tourLine)} · {labelTransport(tour.transportType)}

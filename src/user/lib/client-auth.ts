@@ -92,6 +92,7 @@ export async function getMe(accessToken: string) {
         email: string;
         firstName: string | null;
         lastName: string | null;
+        phone: string | null;
         status: string;
         role: string;
         hasPassword: boolean;
